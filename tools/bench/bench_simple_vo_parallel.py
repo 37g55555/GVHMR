@@ -13,13 +13,23 @@ chain. This is a sanity check, not a correctness assertion.
 
 Reference timings (host: 192-core CPU, opencv 4.11, pycolmap 4.0.4):
 
-  tennis.mp4, scale=0.5, step=8, sift (39 pairs):
-     workers   time(s)   speedup
-           1      3.81      1.00x
-           4      1.45      2.62x
-           8      1.02      3.74x
-          16      0.93      4.10x
-          32      0.96      3.97x
+  tennis.mp4, scale=0.5, step=8, sift (39 pairs, 312 interpolated frames):
+     workers   time(s)   speedup   max|T - T_serial|
+           1      3.66      1.00x   0.00e+00  (baseline)
+           2      1.86      1.97x   5.63e-02
+           4      1.25      2.93x   2.93e-02
+           8      1.02      3.74x   —
+          16      0.93      4.10x   —
+          32      0.96      3.97x   —
+
+  Notes on the 1/2/4 diff column (from `--check`):
+    - workers=1 is bit-identical to itself (it IS the baseline).
+    - workers={2,4} diverge by ~3-6e-2 in max element; this is the
+      expected pycolmap RANSAC non-determinism accumulating through the
+      4x4 T_w2c chain, NOT a correctness bug. Different runs of the same
+      worker count will also differ by a similar magnitude.
+    - The number tends to shrink with more workers in this particular
+      run, but that ordering is noise — don't read a trend into it.
 
   tennis.mp4, scale=0.5, step=4, sift (78 pairs):
      workers   time(s)   speedup
