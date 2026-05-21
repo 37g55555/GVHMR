@@ -11,6 +11,11 @@ matcher_map = {
 class Matcher:
     def __init__(self, matcher="sift", args=None):
         self.matcher: BaseMatcher = matcher_map[matcher](args)
+        self._matcher_name = matcher
+        self._args = args
+
+    def clone(self):
+        return Matcher(self._matcher_name, args=self._args)
 
     def match_np(self, img0, img1):
         """

@@ -117,6 +117,11 @@ two_pair_solver_map = {
 class TwoPairSolver:
     def __init__(self, params: CameraParams, solver: str = "pycolmap"):
         self.solver = two_pair_solver_map[solver](params)
+        self._params = params
+        self._solver_name = solver
+
+    def clone(self):
+        return TwoPairSolver(self._params, solver=self._solver_name)
 
     def get_K(self):
         """
