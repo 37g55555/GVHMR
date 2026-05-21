@@ -1,3 +1,6 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 from .utils import focal_length_from_mm
 from .matcher_wrapper import Matcher
@@ -8,12 +11,13 @@ from hmr4d.utils.video_io_utils import get_video_lwh, read_video_np
 
 
 class SimpleVO:
-    def __init__(self, video_path, scale=0.5, step=8, method="sift", f_mm=None):
+    def __init__(self, video_path, scale=0.5, step=8, method="sift", f_mm=None, num_workers=1):
         self.video_path = video_path
         self.scale = scale
         self.step = step
         self.method = method
         self.f_mm = 24 if f_mm is None else f_mm  # fullframe camera focal length in mm
+        self.num_workers = num_workers
 
     def compute(self):
         # Read video
@@ -41,19 +45,41 @@ class SimpleVO:
         return T_w2c_list
 
     def process_video_T_w2c_list_np(self, frames, matcher: Matcher, solver: TwoPairSolver):
-        T_w2c_list = [np.eye(4)]  # cam poses are defined as T_w2c @ p_w = p_c
-        prev_frame = frames[0]
-        for frame_idx in tqdm(range(1, len(frames))):
-            curr_frame = frames[frame_idx]
+        n_pairs = len(frames) - 1
+        if self.num_workers <= 1:
+            # Serial path (unchanged behavior)
+            T_deltas = [None] * n_pairs
+            for i in tqdm(range(n_pairs)):
+                pts0, pts1 = matcher.match_np(frames[i], frames[i + 1])
+                T_deltas[i] = solver.solve(pts0, pts1)
+        else:
+            # Parallel path: each thread owns its own Matcher/TwoPairSolver to avoid
+            # sharing cv2.SIFT / pycolmap internals across threads.
+            tls = threading.local()
+            H, W = frames.shape[1:3]
+            camera_params = CameraParams(W, H, focal_length=focal_length_from_mm(W, H, self.f_mm))
 
-            # Match frames
-            pts0, pts1 = matcher.match_np(prev_frame, curr_frame)
-            T_delta = solver.solve(pts0, pts1)  # T_delta = T_curr @ T_last^-1
+            def get_worker_state():
+                if not hasattr(tls, "matcher"):
+                    tls.matcher = Matcher(self.method)
+                    tls.solver = TwoPairSolver(camera_params, solver="pycolmap")
+                return tls.matcher, tls.solver
 
-            # Compute current frame's transformation matrix
+            def solve_pair(i):
+                m, s = get_worker_state()
+                pts0, pts1 = m.match_np(frames[i], frames[i + 1])
+                return s.solve(pts0, pts1)
+
+            T_deltas = [None] * n_pairs
+            with ThreadPoolExecutor(max_workers=self.num_workers) as ex:
+                for i, T in tqdm(
+                    zip(range(n_pairs), ex.map(solve_pair, range(n_pairs))),
+                    total=n_pairs,
+                ):
+                    T_deltas[i] = T
+
+        # Serial accumulation (cheap, O(N) 4x4 matmuls)
+        T_w2c_list = [np.eye(4)]
+        for T_delta in T_deltas:
             T_w2c_list.append(T_delta @ T_w2c_list[-1])
-
-            # Current frame becomes previous frame for next iteration
-            prev_frame = curr_frame
-
         return T_w2c_list
