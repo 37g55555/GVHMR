@@ -3,6 +3,7 @@ import torch
 import pytorch_lightning as pl
 import numpy as np
 import argparse
+import csv
 from hmr4d.utils.pylogger import Log
 import hydra
 from hydra import initialize_config_module, compose
@@ -42,6 +43,7 @@ def parse_args_to_cfg():
     parser.add_argument("--video", type=str, default="inputs/demo/dance_3.mp4")
     parser.add_argument("--output_root", type=str, default=None, help="by default to outputs/demo")
     parser.add_argument("-s", "--static_cam", action="store_true", help="If true, skip DPVO")
+    parser.add_argument('-c', '--csv_root', type=str, default="../data/gvhmr_res/", help='Directory for CSV output')
     parser.add_argument("--use_dpvo", action="store_true", help="If true, use DPVO. By default not using DPVO.")
     parser.add_argument(
         "--f_mm",
@@ -67,6 +69,7 @@ def parse_args_to_cfg():
             f"static_cam={args.static_cam}",
             f"verbose={args.verbose}",
             f"use_dpvo={args.use_dpvo}",
+            f"+csv_root={args.csv_root}",
         ]
         if args.f_mm is not None:
             overrides.append(f"f_mm={args.f_mm}")
@@ -244,9 +247,11 @@ def render_incam(cfg):
 
 def render_global(cfg):
     global_video_path = Path(cfg.paths.global_video)
+    '''
     if global_video_path.exists():
         Log.info(f"[Render Global] Video already exists at {global_video_path}")
         return
+    '''
 
     debug_cam = False
     pred = torch.load(cfg.paths.hmr4d_results)
@@ -273,6 +278,38 @@ def render_global(cfg):
 
     verts_glob = move_to_start_point_face_z(pred_ay_verts)
     joints_glob = einsum(J_regressor, verts_glob, "j v, l v i -> l j i")  # (L, J, 3)
+
+    # Export global 3D joints to CSV.
+    results_all = joints_glob.detach().cpu().numpy()
+    T, nBones, _ = results_all.shape
+
+    csv_root = Path(cfg.csv_root)
+    csv_root.mkdir(parents=True, exist_ok=True)
+    csv_path = csv_root / f"{cfg.video_name}.csv"
+
+    with csv_path.open("w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["frame", "landmark", "x", "y", "z", "visibility"])
+        writer.writerows(
+            (
+                t,
+                b,
+                float(results_all[t, b, 0]),
+                float(results_all[t, b, 1]),
+                float(results_all[t, b, 2]),
+                1.0,
+            )
+            for t in range(T)
+            for b in range(nBones)
+        )
+
+    Log.info(f"[Export Joints] Results saved to {csv_path}")
+
+    # Skip rendering only after CSV export has completed.
+    if global_video_path.exists():
+        Log.info(f"[Render Global] Video already exists at {global_video_path}")
+        return
+
     global_R, global_T, global_lights = get_global_cameras_static(
         verts_glob.cpu(),
         beta=2.0,
