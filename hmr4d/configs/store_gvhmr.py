@@ -12,6 +12,8 @@ import hmr4d.model.gvhmr.gvhmr_pl
 import hmr4d.model.gvhmr.utils.endecoder
 import hmr4d.model.common_utils.optimizer
 import hmr4d.model.common_utils.scheduler_cfg
+import hmr4d.network.gvhmr_masked.masked_pose_branch
+import hmr4d.network.gvhmr_masked.mask_transformer.system.transformer_module
 
 # Metric
 import hmr4d.model.gvhmr.callbacks.metric_emdb

@@ -138,7 +138,7 @@ class GvhmrPL(pl.LightningModule):
         # batch["f_imgseq"] = f_imgseq.clone()
 
         # Forward and get loss
-        outputs = self.pipeline.forward(batch, train=True)
+        outputs = self.pipeline.forward(batch, train=True, step=self.global_step)
 
         # Log
         log_kwargs = {

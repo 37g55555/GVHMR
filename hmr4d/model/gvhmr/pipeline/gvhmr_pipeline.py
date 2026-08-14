@@ -33,13 +33,16 @@ from hmr4d.utils.smplx_utils import make_smplx
 
 
 class Pipeline(nn.Module):
-    def __init__(self, args, args_denoiser3d, **kwargs):
+    def __init__(self, args, args_denoiser3d, args_masked_pose_branch=None, **kwargs):
         super().__init__()
         self.args = args
         self.weights = args.weights  # loss weights
 
         # Networks
         self.denoiser3d = instantiate(args_denoiser3d, _recursive_=False)
+        self.masked_pose_branch = None
+        if args_masked_pose_branch is not None:
+            self.masked_pose_branch = instantiate(args_masked_pose_branch, _recursive_=False)
         # Log.info(self.denoiser3d)
 
         # Normalizer
@@ -51,7 +54,7 @@ class Pipeline(nn.Module):
 
     # ========== Training ========== #
 
-    def forward(self, inputs, train=False, postproc=False, static_cam=False):
+    def forward(self, inputs, train=False, postproc=False, static_cam=False, step=0):
         outputs = dict()
         length = inputs["length"]  # (B,) effective length of each sample
 
@@ -72,6 +75,21 @@ class Pipeline(nn.Module):
         # Forward & output
         model_output = self.denoiser3d(length=length, **f_condition)  # pred_x, pred_cam, static_conf_logits
         decode_dict = self.endecoder.decode(model_output["pred_x"])  # (B, L, C) -> dict
+        masked_pose_output = None
+        if self.masked_pose_branch is not None:
+            pred_x = model_output["pred_x"] * self.endecoder.std + self.endecoder.mean
+            masked_pose_result = self.masked_pose_branch(
+                inputs,
+                model_output["pred_context"],
+                pred_x[..., 142:148],
+                pred_x[..., 148:151],
+                train=train,
+                step=step,
+            )
+            if train:
+                masked_pose_output = masked_pose_result
+            else:
+                decode_dict["body_pose"] = masked_pose_result
         outputs.update({"model_output": model_output, "decode_dict": decode_dict})
 
         # Post-processing
@@ -108,6 +126,10 @@ class Pipeline(nn.Module):
             return outputs
 
         # ========== Compute Loss ========== #
+        if masked_pose_output is not None:
+            outputs.update(masked_pose_output)
+            return outputs
+
         total_loss = 0
         mask = inputs["mask"]["valid"]  # (B, L)
 
