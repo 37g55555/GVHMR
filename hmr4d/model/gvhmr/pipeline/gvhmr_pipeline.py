@@ -77,7 +77,7 @@ class Pipeline(nn.Module):
         decode_dict = self.endecoder.decode(model_output["pred_x"])  # (B, L, C) -> dict
         masked_pose_output = None
         if self.masked_pose_branch is not None:
-            pred_x = model_output["pred_x"] * self.endecoder.std + self.endecoder.mean
+            pred_x = model_output["pred_x"]
             masked_pose_result = self.masked_pose_branch(
                 inputs,
                 model_output["pred_context"],

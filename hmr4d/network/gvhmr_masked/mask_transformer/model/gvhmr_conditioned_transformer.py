@@ -11,17 +11,26 @@ class GVHMRConditionedTransformer(nn.Module):
 
         self.cfg = cfg
 
+        # read configs
         self.dim_in = cfg.dim_in
         self.dim_out = cfg.dim_out
         self.dim_feat = cfg.dim_feat
-        self.dim_backbone_feat = cfg.dim_backbone_feat
-        self.dim_cano_traj = cfg.get("dim_cano_traj", 9)
 
+        # backbone feature dimension
+        self.dim_backbone_feat = cfg.dim_backbone_feat
+
+        # canonical space trajectory dimension
+        self.dim_cano_traj = cfg.get(
+            "dim_cano_traj", 9
+        )
+
+        # depth of transformer
         self.mdepth = cfg.mdepth
         self.ddepth = cfg.ddepth
 
         self.num_tokens = cfg.num_tokens
 
+        # positional encoding
         self.m_pos_enc = torch.nn.Parameter(
             torch.zeros(1, 1, self.num_tokens + 1, self.dim_feat)
         )
@@ -31,8 +40,11 @@ class GVHMRConditionedTransformer(nn.Module):
         self.m_transformer = DSTFormer(cfg, self.dim_feat, self.mdepth)
         self.m_traj_embed = nn.Linear(self.dim_cano_traj, self.dim_feat)
 
+        # image feature projection to transformer dimension
         self.img_embed = nn.Linear(self.dim_backbone_feat, self.dim_feat)
 
+        # decoder
+        # positional encoding
         self.d_pos_enc = torch.nn.Parameter(
             torch.zeros(1, 1, self.num_tokens + 2, self.dim_feat)
         )

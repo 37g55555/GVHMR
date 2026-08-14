@@ -4,28 +4,39 @@ import math
 from einops import rearrange
 
 
-def uniform(shape, device=None):
-    return torch.zeros(shape, device=device).float().uniform_(0, 1)
+# tensor helpers
 
-
+# Get a random subset of TRUE mask, with prob
 def get_mask_subset_prob(mask, prob):
     subset_mask = torch.bernoulli(mask, p=prob) & mask
     return subset_mask
 
 
+# classifier free guidance functions
+
+def uniform(shape, device=None):
+    return torch.zeros(shape, device=device).float().uniform_(0, 1)
+
+# sampling helpers
+
 def log(t, eps = 1e-20):
     return torch.log(t.clamp(min = eps))
-
 
 def gumbel_noise(t):
     noise = torch.zeros_like(t).uniform_(0, 1)
     return -log(-log(noise))
 
-
 def gumbel_sample(t, temperature = 1., dim = 1):
     return ((t / max(temperature, 1e-10)) + gumbel_noise(t)).argmax(dim=dim)
 
-
+# Example input:
+#        [[ 0.3596,  0.0862,  0.9771, -1.0000, -1.0000, -1.0000],
+#         [ 0.4141,  0.1781,  0.6628,  0.5721, -1.0000, -1.0000],
+#         [ 0.9428,  0.3586,  0.1659,  0.8172,  0.9273, -1.0000]]
+# Example output:
+#        [[  -inf,   -inf, 0.9771,   -inf,   -inf,   -inf],
+#         [  -inf,   -inf, 0.6628,   -inf,   -inf,   -inf],
+#         [0.9428,   -inf,   -inf,   -inf,   -inf,   -inf]]
 def top_k(logits, k = 1, thres = 0.9, dim = 1):
     if k is None:
         k = math.ceil((1 - thres) * logits.shape[dim])
@@ -38,10 +49,11 @@ def top_k(logits, k = 1, thres = 0.9, dim = 1):
     # raise
     return probs
 
+# noise schedules
 
+# More on large value, less on small
 def cosine_schedule(t):
     return torch.cos(t * math.pi * 0.5)
-
 
 def cal_performance(pred, labels, ignore_index=None, smoothing=0., tk=1, focal_gamma=0.):
     loss = cal_loss(pred, labels, ignore_index, smoothing=smoothing, focal_gamma=focal_gamma)

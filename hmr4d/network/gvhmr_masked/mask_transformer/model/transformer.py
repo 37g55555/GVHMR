@@ -308,8 +308,6 @@ class MaskTransformer(nn.Module):
         # Start from tokens
         starting_temperature = temperature
 
-        # save the tokens at every timestep
-        timestep_ids = []
         last_output = None
 
         for timestep, timestep_int in zip(
@@ -338,7 +336,6 @@ class MaskTransformer(nn.Module):
             )  # (b, k), rank[i, j] = the rank (0: lowest) of scores[i, j] on dim=1
             is_mask = (ranks < num_token_masked.unsqueeze(-1)) & valid_mask
             ids = torch.where(is_mask, self.mask_id, ids)
-            timestep_ids.append(ids.clone())
 
             """
             Preparing input
