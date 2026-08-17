@@ -1,3 +1,4 @@
+from pytorch_lightning.callbacks import ModelCheckpoint
 from hmr4d.model.gvhmr.gvhmr_pl import GvhmrPL
 from hmr4d.configs import MainStore, builds
 
@@ -9,7 +10,7 @@ class MaskTransformerModule(GvhmrPL):
         self,
         pipeline,
         optim,
-        ignored_weights_prefix=["smplx", "pipeline.endecoder", "pipeline.masked_pose_branch.pose_tokenizer"],
+        ignored_weights_prefix=["smplx", "pipeline.endecoder"],
     ):
         super().__init__(
             pipeline=pipeline,
@@ -80,3 +81,13 @@ mask_transformer_module = builds(
     populate_full_signature=True,
 )
 MainStore.store(name="mask_transformer_module", node=mask_transformer_module, group="model/gvhmr")
+
+model_checkpoint = builds(
+    ModelCheckpoint,
+    dirpath="${output_dir}/checkpoints",
+    every_n_train_steps=1_000,
+    save_last=True,
+    save_weights_only=False,
+    populate_full_signature=True,
+)
+MainStore.store(name="every1000s", node=model_checkpoint, group="callbacks/model_checkpoint")

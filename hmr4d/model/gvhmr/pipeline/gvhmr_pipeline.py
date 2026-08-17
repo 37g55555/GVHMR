@@ -69,7 +69,7 @@ class Pipeline(nn.Module):
             "f_cam_angvel": f_cam_angvel,  # (B, L, C=6)
             "f_imgseq": inputs["f_imgseq"],  # (B, L, C=1024)
         }
-        if train:
+        if train and self.masked_pose_branch is None:
             f_condition = randomly_set_null_condition(f_condition, 0.1)
 
         # Forward & output
