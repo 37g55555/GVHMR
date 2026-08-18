@@ -164,19 +164,26 @@ class ProgressReporter(ProgressBar, pl.Callback):
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         super().on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)  # don't forget this :)
-        total = self.total_train_batches
-
         # Speed
-        n_finished = batch_idx + 1
+        is_step_based = trainer.max_epochs == -1 and trainer.max_steps is not None and trainer.max_steps > 0
+        if is_step_based:
+            total = trainer.max_steps
+            n_finished = trainer.global_step
+        else:
+            total = self.total_train_batches
+            n_finished = batch_idx + 1
         percent = 100 * n_finished / total
         time_current = time()
         self.batch_time_queue.append(time_current)
         time_elapsed = time_current - self.time_train_epoch_start  # second
-        time_remaining = time_elapsed * (total - n_finished) / n_finished  # second
         if len(self.batch_time_queue) == 1:  # cannot compute speed
             speed = 1 / time_elapsed
         else:
             speed = (len(self.batch_time_queue) - 1) / (self.batch_time_queue[-1] - self.batch_time_queue[0])
+        if is_step_based:
+            time_remaining = (total - n_finished) / speed  # second
+        else:
+            time_remaining = time_elapsed * (total - n_finished) / n_finished  # second
 
         # Skip if not update
         if not self._should_update(n_finished, total):
