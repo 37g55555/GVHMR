@@ -1,6 +1,7 @@
 # Part of this code is based on https://github.com/Walter0807/MotionBERT
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 import math
 import warnings
 
@@ -362,8 +363,24 @@ class DSTFormer(nn.Module):
 
     def forward(self, x, key_padding_mask=None):
         for idx, (blk_st, blk_ts) in enumerate(zip(self.blocks_st, self.blocks_ts)):
-            x_st = blk_st(x, key_padding_mask=key_padding_mask)
-            x_ts = blk_ts(x, key_padding_mask=key_padding_mask)
+            if self.training:
+                x_st = checkpoint(
+                    blk_st,
+                    x,
+                    key_padding_mask=key_padding_mask,
+                    use_reentrant=False,
+                    preserve_rng_state=True,
+                )
+                x_ts = checkpoint(
+                    blk_ts,
+                    x,
+                    key_padding_mask=key_padding_mask,
+                    use_reentrant=False,
+                    preserve_rng_state=True,
+                )
+            else:
+                x_st = blk_st(x, key_padding_mask=key_padding_mask)
+                x_ts = blk_ts(x, key_padding_mask=key_padding_mask)
             if self.att_fuse:
                 att = self.ts_attn[idx]
                 alpha = torch.cat([x_st, x_ts], dim=-1)
