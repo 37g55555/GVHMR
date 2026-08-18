@@ -214,11 +214,16 @@ class Attention(nn.Module):
             attn_mask = attn_mask.reshape(1, 1, N, N).expand(B, H, -1, -1)
             attn = attn.masked_fill(attn_mask.logical_not(), float("-inf"))
 
+        fully_masked_rows = None
         if key_padding_mask is not None:
             key_padding_mask = key_padding_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1)
             attn = attn.masked_fill(key_padding_mask, float("-inf"))
+            fully_masked_rows = torch.isneginf(attn).all(dim=-1, keepdim=True)
+            attn = attn.masked_fill(fully_masked_rows, 0.0)
 
         attn = attn.softmax(dim=-1)
+        if fully_masked_rows is not None:
+            attn = attn.masked_fill(fully_masked_rows, 0.0)
 
         attn = self.attn_drop(attn)
 
