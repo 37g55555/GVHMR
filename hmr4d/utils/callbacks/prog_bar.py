@@ -120,6 +120,7 @@ class ProgressReporter(ProgressBar, pl.Callback):
         super().setup(trainer, pl_module, stage)
         self.stage = stage
         self.time_exp_start = time()
+        self.time_train_epoch_start = time()
         self.epoch_exp_start = trainer.current_epoch
 
         if self.exp_name is None:
