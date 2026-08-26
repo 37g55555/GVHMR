@@ -56,5 +56,24 @@ class DemoPL(pl.LightningModule):
         if len(unexpected) > 0:
             Log.warn(f"Unexpected keys: {unexpected}")
 
+    def load_masked_pretrained_model(self, ckpt_path):
+        """Load a masked-pose checkpoint with the training checkpoint semantics."""
+        Log.info(f"[PL-Trainer] Loading masked-pose ckpt: {ckpt_path}")
+
+        if self.pipeline.masked_pose_branch is None:
+            raise RuntimeError("Masked-pose checkpoint requested without MaskedPoseBranch")
+
+        state_dict = torch.load(ckpt_path, "cpu")["state_dict"]
+        masked_pose_prefix = "pipeline.masked_pose_branch."
+        if not any(k.startswith(masked_pose_prefix) for k in state_dict):
+            raise RuntimeError(f"MaskedPoseBranch state not found in checkpoint: {ckpt_path}")
+
+        missing, unexpected = self.load_state_dict(state_dict, strict=False)
+        real_missing = [k for k in missing if not k.startswith("pipeline.endecoder")]
+        if len(real_missing) > 0 or len(unexpected) > 0:
+            raise RuntimeError(
+                f"Incompatible masked-pose checkpoint. Missing keys: {real_missing}; unexpected keys: {unexpected}"
+            )
+
 
 MainStore.store(name="gvhmr_pl_demo", node=builds(DemoPL, pipeline="${pipeline}"), group="model/gvhmr")

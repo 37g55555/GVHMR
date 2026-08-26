@@ -41,6 +41,7 @@ def parse_args_to_cfg():
     # Put all args to cfg
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", type=str, default="inputs/demo/dance_3.mp4")
+    parser.add_argument("--masked_ckpt_path", type=str, default=None, help="Masked-pose Lightning checkpoint")
     parser.add_argument("--output_root", type=str, default=None, help="by default to outputs/demo")
     parser.add_argument("-s", "--static_cam", action="store_true", help="If true, skip DPVO")
     parser.add_argument('-c', '--csv_root', type=str, default="../data/gvhmr_res/", help='Directory for CSV output')
@@ -73,6 +74,16 @@ def parse_args_to_cfg():
         ]
         if args.f_mm is not None:
             overrides.append(f"f_mm={args.f_mm}")
+        if args.masked_ckpt_path is not None:
+            masked_ckpt_path = Path(args.masked_ckpt_path)
+            assert masked_ckpt_path.exists(), f"Masked-pose checkpoint not found at {masked_ckpt_path}"
+            overrides.extend(
+                [
+                    "+masked_pose_branch=tokenhmr_moro",
+                    "+pipeline.args_masked_pose_branch=${masked_pose_branch}",
+                    f"+masked_ckpt_path={masked_ckpt_path}",
+                ]
+            )
 
         # Allow to change output root
         if args.output_root is not None:
@@ -285,7 +296,8 @@ def render_global(cfg):
 
     csv_root = Path(cfg.csv_root)
     csv_root.mkdir(parents=True, exist_ok=True)
-    csv_path = csv_root / f"{cfg.video_name}.csv"
+    csv_name = f"{cfg.video_name}_masked" if cfg.get("masked_ckpt_path") is not None else cfg.video_name
+    csv_path = csv_root / f"{csv_name}.csv"
 
     with csv_path.open("w", newline="") as file:
         writer = csv.writer(file)
@@ -345,6 +357,12 @@ if __name__ == "__main__":
     paths = cfg.paths
     Log.info(f"[GPU]: {torch.cuda.get_device_name()}")
     Log.info(f'[GPU]: {torch.cuda.get_device_properties("cuda")}')
+    masked_ckpt_path = cfg.get("masked_ckpt_path")
+    if masked_ckpt_path is not None and Path(paths.hmr4d_results).exists():
+        raise FileExistsError(
+            f"Masked-pose inference would reuse existing results at {paths.hmr4d_results}. "
+            "Select a different --output_root."
+        )
 
     # ===== Preprocess and save to disk ===== #
     run_preprocess(cfg)
@@ -354,7 +372,10 @@ if __name__ == "__main__":
     if not Path(paths.hmr4d_results).exists():
         Log.info("[HMR4D] Predicting")
         model: DemoPL = hydra.utils.instantiate(cfg.model, _recursive_=False)
-        model.load_pretrained_model(cfg.ckpt_path)
+        if masked_ckpt_path is None:
+            model.load_pretrained_model(cfg.ckpt_path)
+        else:
+            model.load_masked_pretrained_model(masked_ckpt_path)
         model = model.eval().cuda()
         tic = Log.sync_time()
         pred = model.predict(data, static_cam=cfg.static_cam)
