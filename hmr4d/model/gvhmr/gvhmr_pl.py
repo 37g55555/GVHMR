@@ -140,6 +140,17 @@ class GvhmrPL(pl.LightningModule):
         # Forward and get loss
         outputs = self.pipeline.forward(batch, train=True, step=self.global_step)
 
+        if "smoothed_body_pose" in outputs:
+            smpl_params_c = dict(batch["smpl_params_c"])
+            smpl_params_c["body_pose"] = outputs.pop("smoothed_body_pose")
+            pred_verts437, _ = self.smplx(**smpl_params_c)
+            vertex_error = torch.norm(pred_verts437 - batch["gt_c_verts437"], dim=-1)
+            local_vertex_loss = vertex_error[batch["mask"]["valid"]].mean()
+            outputs["local_vertex_loss"] = local_vertex_loss
+            outputs["loss"] = (
+                outputs["loss"] + self.pipeline.masked_pose_branch.lambda_v * local_vertex_loss
+            )
+
         # Log
         log_kwargs = {
             "on_epoch": True,

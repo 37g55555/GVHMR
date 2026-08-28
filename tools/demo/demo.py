@@ -42,6 +42,12 @@ def parse_args_to_cfg():
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", type=str, default="inputs/demo/dance_3.mp4")
     parser.add_argument("--masked_ckpt_path", type=str, default=None, help="Masked-pose Lightning checkpoint")
+    parser.add_argument(
+        "--masked_pose_branch",
+        type=str,
+        default="tokenhmr_moro",
+        choices=["tokenhmr_moro", "tokenhmr_moro_smoother"],
+    )
     parser.add_argument("--output_root", type=str, default=None, help="by default to outputs/demo")
     parser.add_argument("-s", "--static_cam", action="store_true", help="If true, skip DPVO")
     parser.add_argument('-c', '--csv_root', type=str, default="../data/gvhmr_res/", help='Directory for CSV output')
@@ -79,7 +85,7 @@ def parse_args_to_cfg():
             assert masked_ckpt_path.exists(), f"Masked-pose checkpoint not found at {masked_ckpt_path}"
             overrides.extend(
                 [
-                    "+masked_pose_branch=tokenhmr_moro",
+                    f"+masked_pose_branch={args.masked_pose_branch}",
                     "+pipeline.args_masked_pose_branch=${masked_pose_branch}",
                     f"+masked_ckpt_path={masked_ckpt_path}",
                 ]

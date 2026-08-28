@@ -1,0 +1,32 @@
+# @package _global_
+defaults:
+    - /exp/gvhmr/masked_pose/tokenhmr_moro
+    - override /masked_pose_branch: tokenhmr_moro_smoother
+    - _self_
+
+exp_name: tokenhmr_moro_smoother
+
+smoother_stage:
+    ckpt_path: ???
+    lambda_v: ???
+    optim: ???
+    max_steps: ???
+    gradient_clip_val: ???
+
+ckpt_path: ${smoother_stage.ckpt_path}
+masked_pose_branch:
+    lambda_v: ${smoother_stage.lambda_v}
+    gumbel:
+        temp_start: 1.0
+        temp_end: 0.01
+        temp_end_ratio: 1.0
+        hard: True
+        total_steps: ${smoother_stage.max_steps}
+
+model:
+    optim: ${smoother_stage.optim}
+
+pl_trainer:
+    max_steps: ${smoother_stage.max_steps}
+    gradient_clip_val: ${smoother_stage.gradient_clip_val}
+

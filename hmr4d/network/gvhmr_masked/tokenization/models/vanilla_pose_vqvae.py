@@ -221,6 +221,9 @@ class DecodeTokens(nn.Module):
 
     def forward(self, logits):
         decode_feat = self.quantizer.dequantize_logits(logits)
+        return self.decode_latent(decode_feat)
+
+    def decode_latent(self, decode_feat):
         pose_out = self.decoder(decode_feat.permute(0,2,1))
         return pose_out['pred_pose_body_6d']
 

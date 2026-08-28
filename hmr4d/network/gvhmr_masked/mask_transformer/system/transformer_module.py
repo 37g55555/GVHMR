@@ -1,6 +1,8 @@
+import torch
 from pytorch_lightning.callbacks import ModelCheckpoint
 from hmr4d.model.gvhmr.gvhmr_pl import GvhmrPL
 from hmr4d.configs import MainStore, builds
+from hmr4d.utils.pylogger import Log
 
 from ..utils.optim_utils import parse_optimizer, parse_scheduler
 
@@ -40,11 +42,38 @@ class MaskTransformerModule(GvhmrPL):
         optimizer = parse_optimizer(
             self.optim, self.pipeline.masked_pose_branch.mask_transformer
         )
+        if self.pipeline.masked_pose_branch.smoother is not None:
+            optimizer.add_param_group(
+                {"params": self.pipeline.masked_pose_branch.smoother.parameters()}
+            )
         scheduler = parse_scheduler(self.optim.scheduler, optimizer)
         return {
             "optimizer": optimizer,
             "lr_scheduler": scheduler,
         }
+
+    def load_pretrained_model(self, ckpt_path):
+        if self.pipeline.masked_pose_branch.smoother is None:
+            return super().load_pretrained_model(ckpt_path)
+
+        Log.info(f"[PL-Trainer] Loading smoother-stage initialization: {ckpt_path}")
+        state_dict = torch.load(ckpt_path, "cpu")["state_dict"]
+        missing, unexpected = self.load_state_dict(state_dict, strict=False)
+
+        smoother_prefix = "pipeline.masked_pose_branch.smoother."
+        real_missing = []
+        for key in missing:
+            ignored_when_saving = any(
+                key.startswith(ignored_prefix) for ignored_prefix in self.ignored_weights_prefix
+            )
+            if not ignored_when_saving and not key.startswith(smoother_prefix):
+                real_missing.append(key)
+
+        if real_missing or unexpected:
+            raise RuntimeError(
+                f"Incompatible smoother-stage initialization. "
+                f"Missing keys: {real_missing}; unexpected keys: {unexpected}"
+            )
 
 
 mask_transformer_module = builds(
