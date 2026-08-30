@@ -1,77 +1,150 @@
-# GVHMR: World-Grounded Human Motion Recovery via Gravity-View Coordinates
-### [Project Page](https://zju3dv.github.io/gvhmr) | [Paper](https://arxiv.org/abs/2409.06662)
+# GVHMR-Masked
 
-> World-Grounded Human Motion Recovery via Gravity-View Coordinates  
-> [Zehong Shen](https://zehongs.github.io/)<sup>\*</sup>,
-[Huaijin Pi](https://phj128.github.io/)<sup>\*</sup>,
-[Yan Xia](https://isshikihugh.github.io/scholar),
-[Zhi Cen](https://scholar.google.com/citations?user=Xyy-uFMAAAAJ),
-[Sida Peng](https://pengsida.net/)<sup>†</sup>,
-[Zechen Hu](https://zju3dv.github.io/gvhmr),
-[Hujun Bao](http://www.cad.zju.edu.cn/home/bao/),
-[Ruizhen Hu](https://csse.szu.edu.cn/staff/ruizhenhu/),
-[Xiaowei Zhou](https://xzhou.me/)  
-> SIGGRAPH Asia 2024
+> This repository extends [GVHMR](https://github.com/zju3dv/GVHMR) with a masked generative local-pose recovery branch.
+> For the original GVHMR documentation, please refer to the [original GVHMR README](README_GVHMR.md).
 
-<p align="center">
-    <img src=docs/example_video/project_teaser.gif alt="animated" />
-</p>
+**Status**
 
-## News 🔥
+- Current checkpoint: `step32000.ckpt` (32,000 / 60,000 steps)
 
-- [2025-03-08] By default not using DPVO. We implemented a SimpleVO, which is more efficient and compatible with GVHMR.
-- [2025-03-08] We added a new option `f_mm` to specify the focal length of the fullframe camera in mm.
+**Upcoming**
 
-## Setup
+- [ ] 60,000-step checkpoint verification
+- [ ] `F_smoother` fine-tuning
 
-Please see [installation](docs/INSTALL.md) for details.
+## Install
 
-## Quick Start
+### Environment
 
-### [<img src="https://i.imgur.com/QCojoJk.png" width="30"> Google Colab demo for GVHMR](https://colab.research.google.com/drive/1N9WSchizHv2bfQqkE9Wuiegw_OT7mtGj?usp=sharing)
+Ubuntu 22.04 (WSL2)
 
-### [<img src="https://s2.loli.net/2024/09/15/aw3rElfQAsOkNCn.png" width="20"> HuggingFace demo for GVHMR](https://huggingface.co/spaces/LittleFrog/GVHMR)
+```bash
+git clone https://github.com/37g55555/GVHMR.git
+cd GVHMR
 
-### Demo
-Demo entries are provided in `tools/demo`. Use `-s` to skip visual odometry if you know the camera is static, otherwise the camera will be estimated by DPVO.
-We also provide a script `demo_folder.py` to inference a entire folder.
-```shell
-python tools/demo/demo.py --video=docs/example_video/tennis.mp4 -s
-python tools/demo/demo_folder.py -f inputs/demo/folder_in -d outputs/demo/folder_out -s
+conda create -y -n gvhmr python=3.10
+conda activate gvhmr
+pip install "git+https://github.com/mattloper/chumpy.git" --no-build-isolation
+pip install -r requirements.txt
+pip install -e .
 ```
 
-### Reproduce
-1. **Test**:
-To reproduce the 3DPW, RICH, and EMDB results in a single run, use the following command:
-    ```shell
-    python tools/train.py global/task=gvhmr/test_3dpw_emdb_rich exp=gvhmr/mixed/mixed ckpt_path=inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt
-    ```
-    To test individual datasets, change `global/task` to `gvhmr/test_3dpw`, `gvhmr/test_rich`, or `gvhmr/test_emdb`.
+### Inputs & Outputs
 
-2. **Train**:
-To train the model, use the following command:
-    ```shell
-    # The gvhmr_siga24_release.ckpt is trained with 2x4090 for 420 epochs, note that different GPU settings may lead to different results.
-    python tools/train.py exp=gvhmr/mixed/mixed
-    ```
-    During training, note that we do not employ post-processing as in the test script, so the global metrics results will differ (but should still be good for comparison with baseline methods).
-
-# Citation
-
-If you find this code useful for your research, please use the following BibTeX entry.
-
-```
-@inproceedings{shen2024gvhmr,
-  title={World-Grounded Human Motion Recovery via Gravity-View Coordinates},
-  author={Shen, Zehong and Pi, Huaijin and Xia, Yan and Cen, Zhi and Peng, Sida and Hu, Zechen and Bao, Hujun and Hu, Ruizhen and Zhou, Xiaowei},
-  booktitle={SIGGRAPH Asia Conference Proceedings},
-  year={2024}
-}
+```bash
+mkdir inputs
+mkdir outputs
 ```
 
-# Acknowledgement
+**Weights**
 
-We thank the authors of
-[WHAM](https://github.com/yohanshin/WHAM),
-[4D-Humans](https://github.com/shubham-goel/4D-Humans),
-and [ViTPose-Pytorch](https://github.com/gpastal24/ViTPose-Pytorch) for their great works, without which our project/code would not be possible.
+```bash
+mkdir -p inputs/checkpoints
+```
+
+1. You need to sign up for downloading SMPL(https://smpl.is.tue.mpg.de/) and SMPLX(https://smpl-x.is.tue.mpg.de/) or [Body Models](https://livecauac-my.sharepoint.com/:f:/g/personal/rlawldls379_cau_ac_kr/IgChhpmSCZdkRLkuIbuCqI0LAfR9NAKnN0KbKOP0rWMlI4g?e=FapXcp). And the checkpoints should be placed in the following structure:
+
+```text
+inputs/checkpoints/
+├── body_models/smplx/
+│   └── SMPLX_{GENDER}.npz # SMPL-X (prediction and evaluation)
+└── body_models/smpl/
+    └── SMPL_{GENDER}.pkl  # SMPL (rendering and evaluation)
+```
+
+2. Download other pretrained models from Google-Drive (By downloading, you agree to the corresponding licences): https://drive.google.com/drive/folders/1eebJ13FUEXrKBawHpJroW0sNSxLjh9xD?usp=drive_link
+
+```text
+inputs/checkpoints/
+├── gvhmr/
+│   └── gvhmr_siga24_release.ckpt
+├── hmr2/
+│   └── epoch=10-step=25000.ckpt
+├── vitpose/
+│   └── vitpose-h-multi-coco.pth
+└── yolo/
+    └── yolov8x.pt
+```
+
+3. Download the [GVHMR-Masked checkpoints](https://livecauac-my.sharepoint.com/:f:/g/personal/rlawldls379_cau_ac_kr/IgBYdj2JJhFyTY8Pr3dVHRE6AVMKHaUkdDBeQYN7AG4LAic?e=6nyDjj) and place them in the following structure:
+
+```text
+inputs/checkpoints/
+├── gvhmr_masked/
+│   └── step32000.ckpt
+└── tokenhmr/
+    └── tokenizer.pth
+```
+
+**Data**
+
+You can download them from [Google Drive](https://drive.google.com/drive/folders/10sEef1V_tULzddFxzCmDUpsIqfv7eP-P?usp=drive_link). Please place them in the "inputs" folder and execute the following commands:
+
+```bash
+cd inputs
+# Train
+tar -xzvf AMASS_hmr4d_support.tar.gz
+tar -xzvf BEDLAM_hmr4d_support.tar.gz
+tar -xzvf H36M_hmr4d_support.tar.gz
+# Test
+tar -xzvf 3DPW_hmr4d_support.tar.gz
+tar -xzvf EMDB_hmr4d_support.tar.gz
+tar -xzvf RICH_hmr4d_support.tar.gz
+
+# The folder structure should be like this:
+inputs/
+├── AMASS/hmr4d_support/
+├── BEDLAM/hmr4d_support/
+├── H36M/hmr4d_support/
+├── 3DPW/hmr4d_support/
+├── EMDB/hmr4d_support/
+└── RICH/hmr4d_support/
+```
+
+## Demo
+
+Demo entry points are provided in `tools/demo`. Use `-s` to skip visual odometry if you know the camera is static, otherwise the camera will be estimated by DPVO.
+
+```bash
+# Add --masked_ckpt_path to run the demo with a trained masked-pose checkpoint.
+python tools/demo/demo.py --video=docs/example_video/tennis.mp4 -s \
+	--masked_ckpt_path=inputs/checkpoints/gvhmr_masked/step32000.ckpt \
+  --output_root=outputs/demo_masked
+```
+
+### Optional: Visualization with Viser
+
+Download the Viser visualization tool from [OneDrive](https://livecauac-my.sharepoint.com/:f:/g/personal/rlawldls379_cau_ac_kr/IgABOkQ_SweJTbAo7slGJ4UVAauhVuykKjpflBtN9P0XpSg?e=Sf3cda).
+
+```bash
+conda create -n viser python=3.11 -y
+conda activate viser
+
+pip install viser pandas
+
+python pose_viser.py
+```
+
+By default, the demo exports CSV files to `../data/gvhmr_res` when launched from the GVHMR project root. Upload an exported CSV file to the Viser interface to inspect the reconstructed motion interactively. Use the "Overlay" button to display multiple loaded motions in the same scene for direct comparison.
+
+## Reproduce
+
+**Test:** To reproduce the 3DPW, RICH, and EMDB results in a single run, use the following command:
+
+```bash
+python tools/train.py \
+    global/task=gvhmr/test_3dpw_emdb_rich \
+    exp=gvhmr/masked_pose/tokenhmr_moro \
+    ckpt_path=inputs/checkpoints/gvhmr_masked/step32000.ckpt
+```
+
+To test individual datasets, change `global/task` to `gvhmr/test_3dpw`, `gvhmr/test_rich`, or `gvhmr/test_emdb`.
+
+**Train:** To train the model, use the following command:
+
+```bash
+# The `step32000.ckpt` checkpoint was trained with 1x RTX 5060 Ti for 32,000 steps using a batch size of 1. Note that different GPU and training settings may lead to different results.
+python tools/train.py exp=gvhmr/masked_pose/tokenhmr_moro
+```
+
+During training, note that we do not employ post-processing as in the test script, so the global metrics results will differ (but should still be good for comparison with baseline methods).
