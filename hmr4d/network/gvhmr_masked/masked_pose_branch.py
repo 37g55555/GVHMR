@@ -1,8 +1,7 @@
-import math
+import numpy as np
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from hydra.utils import instantiate
 from pytorch3d.transforms import matrix_to_axis_angle, rotation_6d_to_matrix
 
@@ -48,16 +47,24 @@ class MaskedPoseBranch(nn.Module):
                 "acc": out["acc"],
             }
             if self.smoother is not None:
-                ratio = min(step / (self.gumbel.total_steps * self.gumbel.temp_end_ratio), 1.0)
-                temperature = self.gumbel.temp_end + 0.5 * (self.gumbel.temp_start - self.gumbel.temp_end) * (
-                    1 + math.cos(ratio * math.pi)
+                logits = out["logits"]
+                temp_start = self.gumbel.temp_start
+                temp_end = self.gumbel.temp_end
+                temp_end_ratio = self.gumbel.temp_end_ratio
+                ratio = min(
+                    step / (self.gumbel.total_steps * temp_end_ratio), 1.0
                 )
-                probabilities = F.gumbel_softmax(
-                    out["logits"], tau=temperature, hard=self.gumbel.hard, dim=1
+                temp = temp_end + 0.5 * (temp_start - temp_end) * (
+                    1 + np.cos(ratio * np.pi)
                 )
-                latent = self.pose_tokenizer.probabilities_to_latent(probabilities)
-                latent = self.smoother(latent)
-                body_pose_r6d = self.pose_tokenizer.decode_latent(latent)
+                hard = self.gumbel.straight_through
+                probs = nn.functional.gumbel_softmax(logits, tau=temp, hard=hard, dim=1)
+
+                weights = self.pose_tokenizer.get_codebook()
+                tokens = torch.einsum("b n f j, n c -> b f j c", probs, weights)
+
+                tokens = self.smoother(tokens, length=inputs["length"])
+                body_pose_r6d = self.pose_tokenizer.decode_latent(tokens)
                 result["smoothed_body_pose"] = matrix_to_axis_angle(
                     rotation_6d_to_matrix(body_pose_r6d)
                 ).flatten(-2)
@@ -95,9 +102,9 @@ class MaskedPoseBranch(nn.Module):
                 if self.smoother is None:
                     body_pose_r6d = self.pose_tokenizer.decode(out["pred_ids"])
                 else:
-                    latent = self.pose_tokenizer.ids_to_latent(out["pred_ids"])
-                    latent = self.smoother(latent)
-                    body_pose_r6d = self.pose_tokenizer.decode_latent(latent)
+                    tokens = self.mask_transformer.token_emb(out["pred_ids"])
+                    tokens = self.smoother(tokens, length=length)
+                    body_pose_r6d = self.pose_tokenizer.decode_latent(tokens)
                 body_pose = matrix_to_axis_angle(rotation_6d_to_matrix(body_pose_r6d)).flatten(-2)
                 if len(body_pose_list) == 0 or window_size == 0:
                     body_pose_list.append(body_pose)
@@ -176,8 +183,8 @@ masked_pose_branch_smoother = builds(
     pose_tokenizer=pose_tokenizer,
     mask_transformer=masked_pose_branch().mask_transformer,
     smoother={
-        "num_tokens": 160,
-        "dim_in": 256,
+        "num_tokens": "${..mask_transformer.num_tokens}",
+        "dim_in": "${..mask_transformer.dim_token}",
         "share_weights": True,
         "dim_hidden": 64,
         "kernel_size": 5,

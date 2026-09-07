@@ -20,13 +20,18 @@ masked_pose_branch:
         temp_start: 1.0
         temp_end: 0.01
         temp_end_ratio: 1.0
-        hard: True
-        total_steps: ${smoother_stage.max_steps}
+        straight_through: True
+        total_steps: ${pl_trainer.max_steps}
 
 model:
-    optim: ${smoother_stage.optim}
+    optim:
+        lr: ${smoother_stage.optim.lr}
+        lr_ratio: ${smoother_stage.optim.lr_ratio}
+        weight_decay: ${smoother_stage.optim.weight_decay}
+        warmup_steps: ${smoother_stage.optim.warmup_steps}
 
 pl_trainer:
     max_steps: ${smoother_stage.max_steps}
     gradient_clip_val: ${smoother_stage.gradient_clip_val}
+    limit_val_batches: 1.0
 

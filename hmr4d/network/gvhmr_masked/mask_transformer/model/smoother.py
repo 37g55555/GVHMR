@@ -2,11 +2,11 @@ import torch
 import torch.nn as nn
 import einops
 
+from hmr4d.utils.net_utils import repeat_to_max_len
+
 class TemporalSmoother(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-
-        self.cfg = cfg
 
         self.dim_in = self.dim_out = cfg.dim_in
         self.dim_hidden = cfg.dim_hidden
@@ -33,13 +33,24 @@ class TemporalSmoother(nn.Module):
                 )
             )
             layers.append(nn.ReLU())
-        layers.append(nn.Conv1d(self.dim_hidden, self.dim_out, kernel_size=1, bias=False))
+        layers.append(
+            nn.Conv1d(self.dim_hidden, self.dim_out, kernel_size=1, bias=False)  # project back
+        )
         self.net = nn.Sequential(*layers)
 
+        # gating
         self.alpha = nn.Parameter(torch.tensor(0.1))
 
-    def forward(self, x):
+    def forward(self, x, length=None):
+        # x: [B, F, J, C]
         B, F, J, C = x.shape
+        if length is not None:
+            # Preserve replicate padding at each real sequence boundary.
+            out = [
+                repeat_to_max_len(self.forward(x[b:b + 1, :n]), F, dim=1)
+                for b, n in enumerate(length.tolist())
+            ]
+            return torch.cat(out, dim=0)
         if self.share_weights:
             out = einops.rearrange(x, "b f j c -> (b j) c f")
             out = self.net(out)

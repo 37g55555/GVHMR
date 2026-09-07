@@ -5,7 +5,7 @@ from hmr4d.model.gvhmr.gvhmr_pl import GvhmrPL
 from hmr4d.configs import MainStore, builds
 from hmr4d.utils.pylogger import Log
 
-from ..utils.optim_utils import parse_optimizer, parse_scheduler
+from ..utils.optim_utils import parse_scheduler
 
 
 OmegaConf.register_new_resolver("eval", eval)
@@ -43,20 +43,11 @@ class MaskTransformerModule(GvhmrPL):
         return self
 
     def configure_optimizers(self):
-        if self.pipeline.masked_pose_branch.smoother is None:
-            params = []
-            for v in self.pipeline.parameters():
-                if v.requires_grad:
-                    params.append(v)
-            optimizer = torch.optim.AdamW(params, lr=self.optim.lr, weight_decay=self.optim.weight_decay)
-        else:
-            optimizer = parse_optimizer(
-                self.optim, self.pipeline.masked_pose_branch.mask_transformer
-            )
-        if self.pipeline.masked_pose_branch.smoother is not None:
-            optimizer.add_param_group(
-                {"params": self.pipeline.masked_pose_branch.smoother.parameters()}
-            )
+        params = []
+        for v in self.pipeline.parameters():
+            if v.requires_grad:
+                params.append(v)
+        optimizer = torch.optim.AdamW(params, lr=self.optim.lr, weight_decay=self.optim.weight_decay)
         scheduler = parse_scheduler(self.optim.scheduler, optimizer)
         return {
             "optimizer": optimizer,

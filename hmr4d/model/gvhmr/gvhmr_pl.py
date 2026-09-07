@@ -144,7 +144,7 @@ class GvhmrPL(pl.LightningModule):
             smpl_params_c = dict(batch["smpl_params_c"])
             smpl_params_c["body_pose"] = outputs.pop("smoothed_body_pose")
             pred_verts437, _ = self.smplx(**smpl_params_c)
-            vertex_error = torch.norm(pred_verts437 - batch["gt_c_verts437"], dim=-1)
+            vertex_error = torch.norm(pred_verts437 - batch["gt_c_verts437"], p=2, dim=-1)
             local_vertex_loss = vertex_error[batch["mask"]["valid"]].mean()
             outputs["local_vertex_loss"] = local_vertex_loss
             outputs["loss"] = (

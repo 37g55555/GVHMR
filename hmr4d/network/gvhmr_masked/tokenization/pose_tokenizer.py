@@ -33,18 +33,11 @@ class PoseTokenizer(nn.Module):
         body_pose_r6d = self.decoder(logits)
         return body_pose_r6d.reshape(B, L, self.num_joints, 6)
 
-    def ids_to_latent(self, ids):
-        return self.decoder.quantizer.dequantize(ids)
-
-    def probabilities_to_latent(self, probabilities):
-        probabilities = probabilities.permute(0, 2, 3, 1)
-        return self.decoder.quantizer.dequantize_logits(probabilities)
-
     def decode_latent(self, latent):
         B, L = latent.shape[:2]
         latent = latent.reshape(B * L, self.num_tokens, self.code_dim)
         body_pose_r6d = self.decoder.decode_latent(latent)
-        return body_pose_r6d.reshape(B, L, 21, 6)
+        return body_pose_r6d.reshape(B, L, self.num_joints, 6)
 
     def get_codebook(self):
         return self.encoder.quantizer.codebook
