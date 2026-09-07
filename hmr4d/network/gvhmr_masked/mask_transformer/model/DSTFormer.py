@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 import math
 import warnings
+import einops
 
 from .rotary_embedding import ROPE
 
@@ -141,7 +142,6 @@ class Attention(nn.Module):
 
         self.num_heads = num_heads
         head_dim = dim // num_heads
-        self.head_dim = head_dim
         self.scale = qk_scale or head_dim**-0.5
 
         self.attn_drop = nn.Dropout(attn_drop)
@@ -171,11 +171,11 @@ class Attention(nn.Module):
                 qkv[1],
                 qkv[2],
             )  # make torchscript happy (cannot use tensor as tuple)
-            
+
             # Apply RoPE to queries and keys
             q = self.rope.rotate_queries_or_keys(q)  # B*J, N, F, C
             k = self.rope.rotate_queries_or_keys(k)  # B*J, N, F, C
-            
+
             x = self.forward_attention(q, k, v, key_padding_mask=key_padding_mask)
             x = x.reshape(B, J, F, C).permute(0, 2, 1, 3)
         elif self.mode == "spatial":
@@ -210,7 +210,7 @@ class Attention(nn.Module):
                 start = max(0, i - self.attn_len)
                 end = min(N, i + self.attn_len + 1)
                 attn_mask[i, start:end] = True
-            
+
             attn_mask = attn_mask.reshape(1, 1, N, N).expand(B, H, -1, -1)
             attn = attn.masked_fill(attn_mask.logical_not(), float("-inf"))
 
@@ -248,7 +248,6 @@ class Block(nn.Module):
         att_fuse=False,
     ):
         super().__init__()
-        self.cfg = cfg
         mlp_ratio = cfg.get("mlp_ratio", 4)
         drop = cfg.get("drop_rate", 0.0)
 
@@ -328,13 +327,6 @@ class DSTFormer(nn.Module):
         self.dim_feat = dim_feat
         self.depth = depth
 
-        self.num_heads = cfg.num_heads
-        self.mlp_ratio = cfg.mlp_ratio
-        self.qkv_bias = cfg.get("qkv_bias", True)
-        self.qk_scale = cfg.get("qk_scale", None)
-        self.drop_rate = cfg.get("drop_rate", 0.0)
-        self.attn_drop_rate = cfg.get("attn_drop_rate", 0.0)
-
         self.att_fuse = cfg.get("att_fuse", True)
 
         self.blocks_st = nn.ModuleList(
@@ -396,3 +388,122 @@ class DSTFormer(nn.Module):
                 x = (x_st + x_ts) * 0.5
         return x
 
+class VMDSTFormer(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+
+        # read configs
+        self.dim_in = cfg.dim_in
+        self.dim_out = cfg.dim_out
+        self.dim_feat = cfg.dim_feat
+
+        # backbone feature dimension
+        self.dim_backbone_feat = cfg.dim_backbone_feat
+
+        # normalized GV orientation and root velocity dimension
+        self.dim_cano_traj = cfg.get(
+            "dim_cano_traj", 9
+        )
+
+        # depth of transformer
+        self.mdepth = cfg.mdepth
+        self.ddepth = cfg.ddepth
+
+        self.num_tokens = cfg.num_tokens
+
+        # positional encoding
+        self.m_pos_enc = torch.nn.Parameter(
+            torch.zeros(1, 1, self.num_tokens + 1, self.dim_feat)
+        )
+        trunc_normal_(self.m_pos_enc, std=0.02)
+
+        self.m_token_embed = nn.Linear(self.dim_in, self.dim_feat)
+        self.m_transformer = DSTFormer(cfg, self.dim_feat, self.mdepth)
+        self.m_traj_embed = nn.Linear(self.dim_cano_traj, self.dim_feat)
+
+        # image feature projection to transformer dimension
+        self.img_embed = nn.Linear(self.dim_backbone_feat, self.dim_feat)
+
+        # decoder
+        # positional encoding
+        self.d_pos_enc = torch.nn.Parameter(
+            torch.zeros(1, 1, self.num_tokens + 2, self.dim_feat)
+        )
+        trunc_normal_(self.d_pos_enc, std=0.02)
+
+        self.d_transformer = DSTFormer(cfg, self.dim_feat, self.ddepth)
+        self.d_pose_regressor = nn.Linear(self.dim_feat, self.dim_out)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=0.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def motion_encode(self, tokens, cano_traj_noisy, key_padding_mask=None):
+        # embed to same dimension
+        tokens = self.m_token_embed(tokens)
+        cano_traj_input = self.m_traj_embed(cano_traj_noisy)
+        cano_traj_input = cano_traj_input.unsqueeze(2)
+
+        motion_feat = torch.cat([tokens, cano_traj_input], dim=2)
+
+        # learnable spatial PE
+        motion_feat = motion_feat + self.m_pos_enc
+
+        motion_feat = self.m_transformer(motion_feat, key_padding_mask=key_padding_mask)
+
+        local_pose_feat = motion_feat[:, :, : self.num_tokens, :]
+        cano_traj_feat = motion_feat[:, :, -1:, :]
+
+        return local_pose_feat, cano_traj_feat
+
+    def decode(self, feat, key_padding_mask=None):
+        # Decode token logits from motion + video features
+
+        # learnable spatial PE
+        feat[:, :, :self.num_tokens] = feat[:, :, :self.num_tokens] + self.d_pos_enc[:, :, :self.num_tokens]
+        feat[:, :, self.num_tokens:-1] = feat[:, :, self.num_tokens:-1] + self.d_pos_enc[:, :, -2:-1]
+        feat[:, :, -1:] = feat[:, :, -1:] + self.d_pos_enc[:, :, -1:]
+
+        feat = self.d_transformer(feat, key_padding_mask=key_padding_mask)
+
+        local_pose_feat = feat[:, :, : self.num_tokens, :]
+        local_pose_logits = self.d_pose_regressor(local_pose_feat)
+        local_pose_logits = einops.rearrange(local_pose_logits, "b f j c -> b c f j")
+
+        return local_pose_logits
+
+    def forward(self, tokens, batch, cond_out=None):
+        """
+        tokens: [B, F, J, C]
+        """
+        img_feat = self.img_embed(batch["cond"]).unsqueeze(2)
+
+        cano_traj_noisy = batch["cano_traj_noisy"]
+        key_padding_mask = batch.get("key_padding_mask", None)
+        local_pose_feat, cano_traj_feat = self.motion_encode(
+            tokens, cano_traj_noisy, key_padding_mask=key_padding_mask
+        )
+
+        if cond_out is not None:
+            img_feat = torch.zeros_like(cond_out["img_feat"])
+
+        feat = torch.cat([
+            local_pose_feat, img_feat, cano_traj_feat
+        ], dim=2)
+        local_pose_logits = self.decode(feat, key_padding_mask=key_padding_mask)
+
+        out = {
+            "logits": local_pose_logits,
+            "img_feat": img_feat,
+        }
+        return out
+
+    def inference(self, tokens, batch, last_output=None):
+        return self(tokens, batch)

@@ -7,7 +7,7 @@ import math
 from torch.distributions.categorical import Categorical
 
 from .tools import *
-from .gvhmr_conditioned_transformer import GVHMRConditionedTransformer
+from .DSTFormer import VMDSTFormer
 
 
 class MaskTransformer(nn.Module):
@@ -21,11 +21,9 @@ class MaskTransformer(nn.Module):
         Wrap DSTFormer
         """
         self.cfg = cfg
-        self.task = cfg.task 
+        self.task = cfg.task
 
-        self.dst_former = GVHMRConditionedTransformer(cfg.dst_former)
-
-        self.num_tokens = cfg.num_tokens
+        self.dst_former = VMDSTFormer(cfg.dst_former)
 
         self.dim_token = cfg.dim_token
         self.num_codes = cfg.num_codes
@@ -54,12 +52,11 @@ class MaskTransformer(nn.Module):
             )
         )  # add zero token for mask
         self.token_emb.requires_grad_(False)
-        print("Token embedding initialized!")
 
     def trans_forward(self, masked_ids, batch, **kwargs):
         """
         :param ids: (B, F, J)
-        :param cond: images, (B, F, J_i, C), J_i = H_i * W_i
+        :param cond: GVHMR context, (B, F, C)
         :return:
             logits: (B, C, F, J)
         """
@@ -68,17 +65,17 @@ class MaskTransformer(nn.Module):
         return out
 
     def test_forward(
-            self, 
-            batch, 
-            ids, 
-            last_output=None, 
+            self,
+            batch,
+            ids,
+            last_output=None,
             cond_scale=1.
             ):
         tokens = self.token_emb(ids)
         out = self.dst_former.inference(tokens, batch, last_output=last_output)
         if self.task != "video" or cond_scale == 1:
             return out
-        
+
         aux_out = self.dst_former(tokens, batch, cond_out=out)
 
         logits = out["logits"]
@@ -122,7 +119,7 @@ class MaskTransformer(nn.Module):
 
     def get_full_mask(self, ids, stage="train"):
         B, F, J = ids.shape
-            
+
         mask = torch.ones((B, F, J), device=ids.device, dtype=torch.bool)
 
         return mask
@@ -136,8 +133,8 @@ class MaskTransformer(nn.Module):
                 break
         if mode is None:
             raise ValueError("Invalid mask scheme!!!")
-        
-        prob_mode = self.scheme_prob 
+
+        prob_mode = self.scheme_prob
         if "+" in mode:
             possible_modes = mode.split("+")
             prob = [prob_mode[m] for m in possible_modes]
@@ -244,15 +241,11 @@ class MaskTransformer(nn.Module):
             # Further Apply Bert Masking Scheme
             # Step 1: 10% replace with an incorrect token
             prob_rid = self.cfg.prob_rid if mode != "full" else 0.0
-            # if self.cfg.rmid_random_only and mode != "random":
-            #     prob_rid = 0.0
             mask_rid = get_mask_subset_prob(mask, prob_rid)
             rand_id = torch.randint_like(x_ids, high=self.num_codes)
             x_ids = torch.where(mask_rid, rand_id, x_ids)
             # Step 2: 90% x 10% replace with correct token, and 90% x 88% replace with mask token
             prob_mid = self.cfg.prob_mid if mode != "full" else 1.0
-            # if self.cfg.rmid_random_only and mode != "random":
-            #     prob_mid = 1.0
             mask_mid = get_mask_subset_prob(mask & ~mask_rid, prob_mid)
 
             x_ids = torch.where(mask_mid, self.mask_id, x_ids)
@@ -310,19 +303,16 @@ class MaskTransformer(nn.Module):
 
         last_output = None
 
-        for timestep, timestep_int in zip(
-            torch.linspace(0, 1, timesteps + 1, device=device)[:timesteps], range(timesteps)
-        ):
+        for timestep in torch.linspace(0, 1, timesteps + 1, device=device)[:timesteps]:
             # 0 < timestep < 1
             rand_mask_prob = (torch.cos(timestep * math.pi) + 1) * 0.5
-            # rand_mask_prob = self.noise_schedule(timestep)  # Tensor
 
             """
             Maskout, and cope with variable length
             """
             # fix: the ratio regarding lengths, instead of seq_len
             num_token_masked = torch.round(
-                rand_mask_prob * num_masked_init 
+                rand_mask_prob * num_masked_init
             ).clamp(
                 min=1
             )  # (b, )
@@ -353,21 +343,13 @@ class MaskTransformer(nn.Module):
             """
             Update ids
             """
-            # if force_mask:
             temperature = starting_temperature
-            # else:
-            # temperature = starting_temperature * (steps_until_x0 / timesteps)
-            # temperature = max(temperature, 1e-4)
-            # print(filtered_logits.shape)
-            # temperature is annealed, gradually reducing temperature as well as randomness
             if gsample:  # use gumbel_softmax sampling
                 pred_ids = gumbel_sample(
                     filtered_logits, temperature=temperature, dim=-1
                 )  # (B, N)
             else:  # use multinomial sampling
                 probs = nn.functional.softmax(filtered_logits / temperature, dim=-1)  # (B, N, C)
-                # print(temperature, starting_temperature, steps_until_x0, timesteps)
-                # print(probs / temperature)
                 pred_ids = Categorical(probs).sample()  # (B, N)
 
             ids = torch.where(is_mask, pred_ids, ids)
@@ -388,7 +370,6 @@ class MaskTransformer(nn.Module):
         out.update({
             "masked_ids": masked_ids,
             "pred_ids": ids,
-        }) 
+        })
 
         return out
-

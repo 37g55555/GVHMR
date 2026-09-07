@@ -12,19 +12,15 @@ class PoseTokenizer(nn.Module):
         self.encoder = EncodeTokens(ckpt_path)
         self.decoder = DecodeTokens(ckpt_path)
 
-        ckpt = torch.load(ckpt_path, map_location='cpu')
-        arch = ckpt['hparams'].ARCH
-        self.num_codes = arch.NB_CODE
-        num_tokens = getattr(arch, 'NUM_TOKENS', None)
-        if num_tokens is None or int(num_tokens) <= 0:
-            num_tokens = int(((21//10)*10) * (2**(arch.TOKEN_SIZE_MUL)) / (2**arch.DOWN_T))
-        self.num_tokens = int(num_tokens)
-        self.code_dim = arch.CODE_DIM
+        self.num_joints = self.decoder.decoder.num_joints
+        self.num_codes = self.encoder.quantizer.nb_code
+        self.num_tokens = self.decoder.num_tokens
+        self.code_dim = self.encoder.quantizer.code_dim
 
     @torch.no_grad()
     def encode(self, body_pose):
         B, L = body_pose.shape[:2]
-        body_pose = body_pose.reshape(B * L, 21, 3)
+        body_pose = body_pose.reshape(B * L, self.num_joints, 3)
         body_pose = matrix_to_rotation_6d(axis_angle_to_matrix(body_pose))
         ids = self.encoder(body_pose)
         return ids.reshape(B, L, self.num_tokens)
@@ -35,7 +31,7 @@ class PoseTokenizer(nn.Module):
         ids = ids.reshape(B * L, self.num_tokens)
         logits = F.one_hot(ids, self.num_codes).float()
         body_pose_r6d = self.decoder(logits)
-        return body_pose_r6d.reshape(B, L, 21, 6)
+        return body_pose_r6d.reshape(B, L, self.num_joints, 6)
 
     def ids_to_latent(self, ids):
         return self.decoder.quantizer.dequantize(ids)
@@ -52,4 +48,3 @@ class PoseTokenizer(nn.Module):
 
     def get_codebook(self):
         return self.encoder.quantizer.codebook
-

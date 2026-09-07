@@ -10,7 +10,7 @@ class nonlinearity(nn.Module):
         return x * torch.sigmoid(x)
 
 class ResConv1DBlock(nn.Module):
-    def __init__(self, n_in, n_state, dilation=1, activation='silu', norm=None, dropout=None):
+    def __init__(self, n_in, n_state, dilation=1, activation='silu', norm=None):
         super().__init__()
         padding = dilation
         self.norm = norm

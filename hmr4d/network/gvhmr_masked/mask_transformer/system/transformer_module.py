@@ -1,10 +1,14 @@
 import torch
+from omegaconf import OmegaConf
 from pytorch_lightning.callbacks import ModelCheckpoint
 from hmr4d.model.gvhmr.gvhmr_pl import GvhmrPL
 from hmr4d.configs import MainStore, builds
 from hmr4d.utils.pylogger import Log
 
 from ..utils.optim_utils import parse_optimizer, parse_scheduler
+
+
+OmegaConf.register_new_resolver("eval", eval)
 
 
 class MaskTransformerModule(GvhmrPL):
@@ -39,9 +43,16 @@ class MaskTransformerModule(GvhmrPL):
         return self
 
     def configure_optimizers(self):
-        optimizer = parse_optimizer(
-            self.optim, self.pipeline.masked_pose_branch.mask_transformer
-        )
+        if self.pipeline.masked_pose_branch.smoother is None:
+            params = []
+            for v in self.pipeline.parameters():
+                if v.requires_grad:
+                    params.append(v)
+            optimizer = torch.optim.AdamW(params, lr=self.optim.lr, weight_decay=self.optim.weight_decay)
+        else:
+            optimizer = parse_optimizer(
+                self.optim, self.pipeline.masked_pose_branch.mask_transformer
+            )
         if self.pipeline.masked_pose_branch.smoother is not None:
             optimizer.add_param_group(
                 {"params": self.pipeline.masked_pose_branch.smoother.parameters()}
@@ -100,8 +111,8 @@ mask_transformer_module = builds(
                 {
                     "name": "CosineAnnealingLR",
                     "args": {
-                        "T_max": 58_000,
-                        "eta_min": 1e-6,
+                        "T_max": "${eval:${pl_trainer.max_steps} - ${model.optim.warmup_steps}}",
+                        "eta_min": "${eval:${model.optim.lr} * ${model.optim.lr_ratio}}",
                     },
                 },
             ],

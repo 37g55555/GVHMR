@@ -9,11 +9,6 @@ from .quantize_cnn import QuantizeEMAReset
 from pytorch3d.transforms import rotation_6d_to_matrix
 
 
-def step_multiplier_mapping():
-    return {
-        0: 1e-2, 1: 5e-2, 2: 1e-1, 3: 1e-1, 4: 5e-1, 5: 5e-1
-    }
-
 def prepare_statedict(model, full_state_dict, partname, ignore_partname=' '):
     part_statedict = {}
     new_part_statedict = OrderedDict()
@@ -34,7 +29,6 @@ def prepare_statedict(model, full_state_dict, partname, ignore_partname=' '):
 
 class PoseSPEncoderV1(nn.Module):
     def __init__(self,
-                 rot_type = 'rotmat',
                  output_emb_width = 512,
                  down_t = 1,
                  stride_t = 2,
@@ -44,7 +38,6 @@ class PoseSPEncoderV1(nn.Module):
                  input_dim = 9,
                  dilation_growth_rate = 3,
                  inp_preprocess = True,
-                 add_noise = False,
                  target_tokens = None):
         super(PoseSPEncoderV1, self).__init__()
 
@@ -52,13 +45,8 @@ class PoseSPEncoderV1(nn.Module):
         num_joints = 21
         filter_t, pad_t = stride_t * 2, stride_t // 2
         self.inp_preprocess = inp_preprocess
-        self.add_noise = add_noise
         # If set, we will interpolate the final latent sequence to exactly target_tokens (enables arbitrary token counts)
         self.target_tokens = target_tokens
-        self.step_multiplier_mapping = step_multiplier_mapping()
-        if self.add_noise:
-            from utils.skeleton import get_smplx_body_parts
-            self.smplx_body_parts = get_smplx_body_parts()
         encoder_layers.append(nn.Conv1d(input_dim, width, 3, 1, 1))
         encoder_layers.append(nn.ReLU())
 
@@ -66,7 +54,7 @@ class PoseSPEncoderV1(nn.Module):
         encoder_layers.append(nn.Upsample(((num_joints*2)//10)*10))
         encoder_layers.append(nn.Conv1d(width, width, 3, 1, 1))
         encoder_layers.append(nn.ReLU())
-        
+
         for _ in range(token_size_mul-1):
             encoder_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
             encoder_layers.append(nn.Conv1d(width, width, 3, 1, 1))
@@ -79,7 +67,7 @@ class PoseSPEncoderV1(nn.Module):
                 Resnet1D(width, depth, dilation_growth_rate, activation='relu', norm=False),
             )
             encoder_layers.append(block)
-        
+
         encoder_layers.append(nn.Conv1d(width, output_emb_width, 3, 1, 1))
         self.encoder = nn.Sequential(*encoder_layers)
 
@@ -89,15 +77,7 @@ class PoseSPEncoderV1(nn.Module):
         x = x.permute(0,2,1)
         return x
 
-    def forward(self, x, global_step=None):
-        if self.add_noise and global_step is not None:
-            step = global_step // 5000
-            noise_multiplier = float(self.step_multiplier_mapping[step]) if step <=5 else 0.5
-            batch_size = x.shape[0]
-            noised_samples = np.random.randint(low=0, high=batch_size-1, size=batch_size//2)
-            mask_part = np.random.randint(len(self.smplx_body_parts.keys()))
-            masked_joints = self.smplx_body_parts[mask_part]
-            x[noised_samples][:,masked_joints] += (torch.cuda.FloatTensor(1).uniform_() * noise_multiplier)
+    def forward(self, x):
         if self.inp_preprocess:
             x = self.preprocess(x)
         x = self.encoder(x)
@@ -105,9 +85,6 @@ class PoseSPEncoderV1(nn.Module):
         if self.target_tokens is not None and x.shape[-1] != self.target_tokens:
             # Use linear interpolation for smoother feature resizing
             x = F.interpolate(x, size=int(self.target_tokens), mode='linear', align_corners=False)
-        # for layer in self.encoder:
-        #     print(f'{layer} --> {x.shape} --> {layer(x).shape}')
-        #     x = layer(x)
         return x
 
 class PoseSPDecoderV1(nn.Module):
@@ -132,8 +109,7 @@ class PoseSPDecoderV1(nn.Module):
 
         decoder_layers.append(nn.Conv1d(output_emb_width, width, 3, 1, 1))
         decoder_layers.append(nn.ReLU())
-        
-        print(f'Num of tokens --> {num_tokens}')
+
         for i in list(np.linspace(self.num_joints, num_tokens, token_size_div, endpoint=False, dtype=int)[::-1]):
             decoder_layers.append(nn.Upsample(i))
             decoder_layers.append(nn.Conv1d(width, width, 3, 1, 1))
@@ -161,7 +137,7 @@ class PoseSPDecoderV1(nn.Module):
         batch_size = x.shape[0]
 
         x = self.decoder(x)
-        
+
         if not self.out_postprocess:
             return x
         pred_pose = self.postprocess(x)
@@ -171,12 +147,12 @@ class PoseSPDecoderV1(nn.Module):
             pred_pose_rotmat = rotation_6d_to_matrix(pred_pose.reshape(-1, 6)).view(batch_size, self.num_joints, 3, 3)
         elif self.rot_type == 'rotmat':
             NotImplementedError()
-        
+
         output.update({
             'pred_pose_body_6d': pred_pose_6d,
             'pred_pose_body_rotmat': pred_pose_rotmat,
         })
-        
+
         return output
 
 
@@ -184,7 +160,7 @@ class DecodeTokens(nn.Module):
     def __init__(self,
                  ckpt_path=''):
         super(DecodeTokens, self).__init__()
-        
+
         num_joints = 21
         ckpt = torch.load(ckpt_path, map_location='cpu')
         pretrained_hparams = ckpt['hparams']
@@ -205,7 +181,8 @@ class DecodeTokens(nn.Module):
             num_tokens = int(((num_joints//10)*10) * (2**(token_size_mul)) / (2**down_t))
         else:
             num_tokens = int(num_tokens)
-        
+        self.num_tokens = num_tokens
+
         self.decoder = PoseSPDecoderV1(rot_type=rot_type,
                                        output_dim=6,
                                        output_emb_width=output_emb_width,
@@ -230,17 +207,16 @@ class DecodeTokens(nn.Module):
     def load_weights(self, ckpt):
         prepare_statedict(self.decoder, ckpt['net'], 'decoder', 'body_model')
         prepare_statedict(self.quantizer, ckpt['net'], 'quantizer', 'body_model')
-        
+
 
 class EncodeTokens(nn.Module):
     def __init__(self,
                  ckpt_path=''):
         super(EncodeTokens, self).__init__()
-        
+
         ckpt = torch.load(ckpt_path, map_location='cpu')
         pretrained_hparams = ckpt['hparams']
         arch = pretrained_hparams.ARCH
-        rot_type = arch.ROT_TYPE
         code_dim = arch.CODE_DIM
         nb_code = arch.NB_CODE
         output_emb_width = code_dim
@@ -251,8 +227,7 @@ class EncodeTokens(nn.Module):
         token_size_mul = arch.TOKEN_SIZE_MUL
         # Mirror num_tokens logic for encoder interpolation if explicit override exists in checkpoint.
         explicit_num_tokens = getattr(arch, 'NUM_TOKENS', None)
-        self.encoder = PoseSPEncoderV1(rot_type=rot_type,
-                                       input_dim=6,
+        self.encoder = PoseSPEncoderV1(input_dim=6,
                                        output_emb_width=output_emb_width,
                                        down_t=down_t,
                                        width=width,
@@ -277,4 +252,3 @@ class EncodeTokens(nn.Module):
     def load_weights(self, ckpt):
         prepare_statedict(self.encoder, ckpt['net'], 'encoder')
         prepare_statedict(self.quantizer, ckpt['net'], 'quantizer')
-

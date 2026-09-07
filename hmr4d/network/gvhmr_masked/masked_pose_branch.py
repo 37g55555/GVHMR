@@ -137,7 +137,7 @@ masked_pose_branch = builds(
             "num_tokens": "${..num_tokens}",
             "dim_in": "${..dim_token}",
             "dim_out": "${..num_codes}",
-            "dim_backbone_feat": 512,
+            "dim_backbone_feat": "${network.latent_dim}",
             "dim_feat": 1024,
             "dim_cano_traj": 9,
             "mdepth": 4,
@@ -192,4 +192,3 @@ masked_pose_branch_smoother = builds(
 MainStore.store(
     name="tokenhmr_moro_smoother", node=masked_pose_branch_smoother, group="masked_pose_branch"
 )
-

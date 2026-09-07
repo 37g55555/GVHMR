@@ -43,10 +43,6 @@ def top_k(logits, k = 1, thres = 0.9, dim = 1):
     val, ind = logits.topk(k, dim = dim)
     probs = torch.full_like(logits, float('-inf'))
     probs.scatter_(dim, ind, val)
-    # func verified
-    # print(probs)
-    # print(logits)
-    # raise
     return probs
 
 # noise schedules
@@ -57,10 +53,6 @@ def cosine_schedule(t):
 
 def cal_performance(pred, labels, ignore_index=None, smoothing=0., tk=1, focal_gamma=0.):
     loss = cal_loss(pred, labels, ignore_index, smoothing=smoothing, focal_gamma=focal_gamma)
-    # pred_id = torch.argmax(pred, dim=1)
-    # mask = labels.ne(ignore_index)
-    # n_correct = pred_id.eq(labels).masked_select(mask)
-    # acc = torch.mean(n_correct.float()).item()
     pred_id_k = torch.topk(pred, k=tk, dim=1).indices
     pred_id = pred_id_k[:, 0]
     mask = labels.ne(ignore_index)
@@ -72,28 +64,23 @@ def cal_performance(pred, labels, ignore_index=None, smoothing=0., tk=1, focal_g
 
 def cal_loss(pred, labels, ignore_index=None, smoothing=0., focal_gamma=0.):
     '''Calculate cross entropy loss, apply label smoothing if needed.'''
-    # print(pred.shape, labels.shape) #torch.Size([64, 1028, 55]) torch.Size([64, 55])
-    # print(pred.shape, labels.shape) #torch.Size([64, 1027, 55]) torch.Size([64, 55])
     if smoothing:
         space = 2
         n_class = pred.size(1)
         mask = labels.ne(ignore_index)
         one_hot = rearrange(F.one_hot(labels, n_class + space), 'a ... b -> a b ...')[:, :n_class]
-        # one_hot = torch.zeros_like(pred).scatter(1, labels.unsqueeze(1), 1)
         sm_one_hot = one_hot * (1 - smoothing) + (1 - one_hot) * smoothing / (n_class - 1)
         neg_log_prb = -F.log_softmax(pred, dim=1)
         loss = (sm_one_hot * neg_log_prb).sum(dim=1)
-        # loss = F.cross_entropy(pred, sm_one_hot, reduction='none')
         loss = torch.mean(loss.masked_select(mask))
     else:
         if focal_gamma > 0:
             # Focal loss
             ce_loss = F.cross_entropy(pred, labels, reduction='none', ignore_index=ignore_index)
-            ce_loss = ce_loss[ce_loss > 0.] 
+            ce_loss = ce_loss[ce_loss > 0.]
             pt = torch.exp(-ce_loss)
             loss = ((1 - pt) ** focal_gamma * ce_loss).mean()
         else:
             loss = F.cross_entropy(pred, labels, ignore_index=ignore_index)
 
     return loss
-
