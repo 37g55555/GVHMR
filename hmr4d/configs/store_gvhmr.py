@@ -1,6 +1,7 @@
 # Dataset
 import hmr4d.dataset.pure_motion.amass
 import hmr4d.dataset.emdb.emdb_motion_test
+import hmr4d.dataset.egobody.egobody_occ
 import hmr4d.dataset.rich.rich_motion_test
 import hmr4d.dataset.threedpw.threedpw_motion_test
 import hmr4d.dataset.threedpw.threedpw_motion_train
@@ -17,6 +18,7 @@ import hmr4d.network.gvhmr_masked.mask_transformer.system.transformer_module
 
 # Metric
 import hmr4d.model.gvhmr.callbacks.metric_emdb
+import hmr4d.model.gvhmr.callbacks.metric_egobody_occ
 import hmr4d.model.gvhmr.callbacks.metric_rich
 import hmr4d.model.gvhmr.callbacks.metric_3dpw
 

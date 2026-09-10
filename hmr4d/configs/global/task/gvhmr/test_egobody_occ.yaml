@@ -1,0 +1,15 @@
+# @package _global_
+defaults:
+  - override /data: mocap/testY
+  - override /test_datasets:
+      - egobody_occ/all
+  - override /callbacks:
+      - metric_egobody_occ
+  - _self_
+
+task: test
+data_name: test_egobody_occ
+ckpt_path: ???
+pl_trainer:
+  devices: 1
+logger: null
