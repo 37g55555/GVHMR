@@ -10,10 +10,29 @@ pipeline:
   args:
     endecoder_opt: ${endecoder}
     normalize_cam_angvel: True
+    pose_tokenizer_ckpt: inputs/checkpoints/tokenhmr/tokenizer.pth
+    masked_pose:
+      dim: 1024
+      motion_depth: 4
+      decoder_depth: 2
+      num_heads: 8
+      mlp_ratio: 4.0
+      dropout: 0.0
+      attn_len: 60
+      mask_modes: [random, joint, frame]
+      mask_mode_weights: [0.4, 0.2, 0.2]
+      mask_tau: 1.0
+      random_replace_prob: 0.1
+      mask_replace_prob: 1.0
+      generation_steps: 5
+      generation_temperature: 1.0
+      temp_start: 1.0
+      temp_end: 0.01
+      temp_end_ratio: 1.0
     weights: null
     static_conf: null
 
-ckpt_path: inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt
+ckpt_path: inputs/checkpoints/gvhmr/gvhmr_masked_pose_release.ckpt
 
 # ================================ #
 #          global setting          #

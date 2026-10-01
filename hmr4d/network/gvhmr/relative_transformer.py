@@ -15,7 +15,7 @@ class NetworkEncoderRoPE(nn.Module):
     def __init__(
         self,
         # x
-        output_dim=151,
+        output_dim=25,
         max_len=120,
         # condition
         cliffcam_dim=3,
@@ -161,9 +161,9 @@ class NetworkEncoderRoPE(nn.Module):
         # Output
         sample = self.final_layer(x)  # (B, L, C)
         if self.avgbeta:
-            betas = (sample[..., 126:136] * (~pmask[..., None])).sum(1) / length[:, None]  # (B, C)
+            betas = (sample[..., :10] * (~pmask[..., None])).sum(1) / length[:, None]  # (B, C)
             betas = repeat(betas, "b c -> b l c", l=L)
-            sample = torch.cat([sample[..., :126], betas, sample[..., 136:]], dim=-1)
+            sample = torch.cat([betas, sample[..., 10:]], dim=-1)
 
         # Output (extra)
         pred_cam = None

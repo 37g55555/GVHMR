@@ -15,6 +15,8 @@ from hmr4d.model.gvhmr.utils.postprocess import (
     pp_static_joint_cam,
 )
 from hmr4d.model.gvhmr.utils import stats_compose
+from hmr4d.network.gvhmr.masked_pose import MaskedPoseModel
+from hmr4d.network.gvhmr.pose_tokenizer import PoseTokenizer
 
 from pytorch3d.transforms import (
     matrix_to_rotation_6d,
@@ -44,6 +46,15 @@ class Pipeline(nn.Module):
 
         # Normalizer
         self.endecoder: EnDecoder = instantiate(args.endecoder_opt, _recursive_=False)
+
+        self.pose_tokenizer = PoseTokenizer(args.pose_tokenizer_ckpt)
+        self.masked_pose = MaskedPoseModel(
+            num_tokens=self.pose_tokenizer.num_tokens,
+            codebook_size=self.pose_tokenizer.codebook_size,
+            code_dim=self.pose_tokenizer.code_dim,
+            context_dim=self.denoiser3d.latent_dim,
+            **dict(args.masked_pose),
+        )
         if self.args.normalize_cam_angvel:
             cam_angvel_stats = stats_compose.cam_angvel["manual"]
             self.register_buffer("cam_angvel_mean", torch.tensor(cam_angvel_stats["mean"]), persistent=False)
@@ -51,7 +62,7 @@ class Pipeline(nn.Module):
 
     # ========== Training ========== #
 
-    def forward(self, inputs, train=False, postproc=False, static_cam=False):
+    def forward(self, inputs, train=False, postproc=False, static_cam=False, train_progress=0.0):
         outputs = dict()
         length = inputs["length"]  # (B,) effective length of each sample
 
@@ -72,6 +83,33 @@ class Pipeline(nn.Module):
         # Forward & output
         model_output = self.denoiser3d(length=length, **f_condition)  # pred_x, pred_cam, static_conf_logits
         decode_dict = self.endecoder.decode(model_output["pred_x"])  # (B, L, C) -> dict
+        gamma_gv = model_output["pred_x"][..., 16:22].detach()
+        root_velocity = model_output["pred_x"][..., 22:25].detach()
+
+        if train:
+            token_ids = self.pose_tokenizer.encode(inputs["smpl_params_c"]["body_pose"])
+            pose_logits, pose_mask = self.masked_pose.forward_train(
+                token_ids,
+                gamma_gv,
+                root_velocity,
+                model_output["pred_context"],
+                length,
+                self.pose_tokenizer.codebook,
+            )
+            temperature = self.masked_pose.get_training_temperature(train_progress)
+            token_probabilities = F.gumbel_softmax(pose_logits, tau=temperature, hard=True, dim=-1)
+            body_pose = self.pose_tokenizer.decode_probabilities(token_probabilities)
+        else:
+            token_ids = self.masked_pose.generate(
+                gamma_gv,
+                root_velocity,
+                model_output["pred_context"],
+                length,
+                self.pose_tokenizer.codebook,
+            )
+            body_pose = self.pose_tokenizer.decode_ids(token_ids)
+
+        decode_dict["body_pose"] = body_pose
         outputs.update({"model_output": model_output, "decode_dict": decode_dict})
 
         # Post-processing
@@ -112,16 +150,21 @@ class Pipeline(nn.Module):
         mask = inputs["mask"]["valid"]  # (B, L)
 
         # 1. Simple loss: MSE
-        pred_x = model_output["pred_x"]  # (B, L, C)
-        target_x = self.endecoder.encode(inputs)  # (B, L, C)
+        pred_x = model_output["pred_x"]  # (B, L, 25)
+        target_x = self.endecoder.encode(inputs)  # (B, L, 25)
         simple_loss = F.mse_loss(pred_x, target_x, reduction="none")
         mask_simple = mask[:, :, None].expand(-1, -1, pred_x.size(2)).clone()  # (B, L, C)
-        mask_simple[inputs["mask"]["spv_incam_only"], :, 142:] = False  # 3dpw training
+        mask_simple[inputs["mask"]["spv_incam_only"], :, 16:] = False  # 3dpw training
         simple_loss = (simple_loss * mask_simple).mean()
         total_loss += simple_loss
         outputs["simple_loss"] = simple_loss
 
-        # 2. Extra loss
+        # 2. Masked-token classification loss
+        token_loss = F.cross_entropy(pose_logits[pose_mask], token_ids[pose_mask])
+        total_loss += token_loss * self.weights.token_ce
+        outputs["token_loss"] = token_loss
+
+        # 3. Extra loss
         extra_funcs = [
             compute_extra_incam_loss,
             compute_extra_global_loss,

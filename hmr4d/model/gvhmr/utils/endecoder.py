@@ -102,18 +102,14 @@ class EnDecoder(nn.Module):
     def encode(self, inputs):
         """
         definition: {
-                body_pose_r6d,  # (B, L, (J-1)*6) -> 0:126
-                betas, # (B, L, 10) -> 126:136
-                global_orient_r6d,  # (B, L, 6) -> 136:142  incam
-                global_orient_gv_r6d: # (B, L, 6) -> 142:148  gv
-                local_transl_vel,  # (B, L, 3) -> 148:151, smpl-coord
+                betas, # (B, L, 10) -> 0:10
+                global_orient_r6d,  # (B, L, 6) -> 10:16  incam
+                global_orient_gv_r6d: # (B, L, 6) -> 16:22  gv
+                local_transl_vel,  # (B, L, 3) -> 22:25, smpl-coord
             }
         """
-        B, L = inputs["smpl_params_c"]["body_pose"].shape[:2]
         # cam
         smpl_params_c = inputs["smpl_params_c"]
-        body_pose = smpl_params_c["body_pose"].reshape(B, L, 21, 3)
-        body_pose_r6d = matrix_to_rotation_6d(axis_angle_to_matrix(body_pose)).flatten(-2)
         betas = smpl_params_c["betas"]
         global_orient_R = axis_angle_to_matrix(smpl_params_c["global_orient"])
         global_orient_r6d = matrix_to_rotation_6d(global_orient_R)
@@ -132,8 +128,10 @@ class EnDecoder(nn.Module):
             print((transl_recover - smpl_params_w["transl"]).abs().max())
 
         # returns
-        x = torch.cat([body_pose_r6d, betas, global_orient_r6d, global_orient_gv_r6d, local_transl_vel], dim=-1)
-        x_norm = (x - self.mean) / self.std
+        x = torch.cat([betas, global_orient_r6d, global_orient_gv_r6d, local_transl_vel], dim=-1)
+        mean = self.mean if self.mean.shape[-1] == 1 else self.mean[126:]
+        std = self.std if self.std.shape[-1] == 1 else self.std[126:]
+        x_norm = (x - mean) / std
         return x_norm
 
     def encode_translw(self, inputs):
@@ -160,22 +158,19 @@ class EnDecoder(nn.Module):
 
     def decode(self, x_norm):
         """x_norm: (B, L, C)"""
-        B, L, C = x_norm.shape
-        x = (x_norm * self.std) + self.mean
+        mean = self.mean if self.mean.shape[-1] == 1 else self.mean[126:]
+        std = self.std if self.std.shape[-1] == 1 else self.std[126:]
+        x = (x_norm * std) + mean
 
-        body_pose_r6d = x[:, :, :126]
-        betas = x[:, :, 126:136]
-        global_orient_r6d = x[:, :, 136:142]
-        global_orient_gv_r6d = x[:, :, 142:148]
-        local_transl_vel = x[:, :, 148:151]
+        betas = x[:, :, :10]
+        global_orient_r6d = x[:, :, 10:16]
+        global_orient_gv_r6d = x[:, :, 16:22]
+        local_transl_vel = x[:, :, 22:25]
 
-        body_pose = matrix_to_axis_angle(rotation_6d_to_matrix(body_pose_r6d.reshape(B, L, -1, 6)))
-        body_pose = body_pose.flatten(-2)
         global_orient_c = matrix_to_axis_angle(rotation_6d_to_matrix(global_orient_r6d))
         global_orient_gv = matrix_to_axis_angle(rotation_6d_to_matrix(global_orient_gv_r6d))
 
         output = {
-            "body_pose": body_pose,
             "betas": betas,
             "global_orient": global_orient_c,
             "global_orient_gv": global_orient_gv,
