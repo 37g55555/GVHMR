@@ -42,6 +42,8 @@ class Pipeline(nn.Module):
 
         # Networks
         self.denoiser3d = instantiate(args_denoiser3d, _recursive_=False)
+        self.denoiser3d.requires_grad_(False)
+        self.denoiser3d.eval()
         # Log.info(self.denoiser3d)
 
         # Normalizer
@@ -59,6 +61,11 @@ class Pipeline(nn.Module):
             cam_angvel_stats = stats_compose.cam_angvel["manual"]
             self.register_buffer("cam_angvel_mean", torch.tensor(cam_angvel_stats["mean"]), persistent=False)
             self.register_buffer("cam_angvel_std", torch.tensor(cam_angvel_stats["std"]), persistent=False)
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.denoiser3d.eval()
+        return self
 
     # ========== Training ========== #
 

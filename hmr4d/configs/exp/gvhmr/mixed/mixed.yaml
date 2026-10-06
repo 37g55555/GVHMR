@@ -30,6 +30,7 @@ exp_name_base: mixed
 exp_name_var: ""
 exp_name: ${exp_name_base}${exp_name_var}
 data_name: mocap_mixed_v1
+ckpt_path: inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt
 
 pipeline:
     _target_: hmr4d.model.gvhmr.pipeline.gvhmr_pipeline.Pipeline
