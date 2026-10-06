@@ -161,7 +161,15 @@ class Attention(nn.Module):
             attn = attn.masked_fill(attn_mask.logical_not(), float("-inf"))
             attn = attn.masked_fill(~key_mask[:, None, None], float("-inf"))
 
+        if self.mode == "temporal":
+            row_valid = (attn_mask & key_mask[:, None, None]).any(dim=-1, keepdim=True)
+            attn = attn.masked_fill(~row_valid, 0.0)
+
         attn = attn.softmax(dim=-1)
+
+        if self.mode == "temporal":
+            attn = attn.masked_fill(~row_valid, 0.0)
+
         attn = self.attn_drop(attn)
 
         x = attn @ v
