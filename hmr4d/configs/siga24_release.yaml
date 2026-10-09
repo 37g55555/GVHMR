@@ -6,7 +6,7 @@ pipeline:
     normalize_cam_angvel: true
     pose_tokenizer_ckpt: inputs/checkpoints/tokenhmr/tokenizer.pth
     masked_pose:
-      dim: 1024
+      dim: 256
       motion_depth: 4
       decoder_depth: 2
       num_heads: 8
