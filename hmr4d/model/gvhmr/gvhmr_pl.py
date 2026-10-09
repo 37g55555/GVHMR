@@ -310,6 +310,10 @@ class GvhmrPL(pl.LightningModule):
             self.pipeline.denoiser3d.load_state_dict(state_dict, strict=True)
             return
 
+        self.pipeline.denoiser3d.load_state_dict(
+            select_state_dict_by_prefix(state_dict, "pipeline.denoiser3d."), strict=True
+        )
+
         missing, unexpected = self.load_state_dict(state_dict, strict=False)
         real_missing = []
         for k in missing:

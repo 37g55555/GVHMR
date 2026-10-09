@@ -2,6 +2,7 @@ import torch
 import pytorch_lightning as pl
 from hydra.utils import instantiate
 from hmr4d.utils.pylogger import Log
+from hmr4d.utils.net_utils import select_state_dict_by_prefix
 from hmr4d.configs import MainStore, builds
 
 from hmr4d.utils.geo.hmr_cam import normalize_kp2d
@@ -50,6 +51,10 @@ class DemoPL(pl.LightningModule):
         Log.info(f"[PL-Trainer] Loading ckpt type: {ckpt_path}")
 
         state_dict = torch.load(ckpt_path, "cpu")["state_dict"]
+        self.pipeline.denoiser3d.load_state_dict(
+            select_state_dict_by_prefix(state_dict, "pipeline.denoiser3d."), strict=True
+        )
+
         missing, unexpected = self.load_state_dict(state_dict, strict=False)
         if len(missing) > 0:
             Log.warn(f"Missing keys: {missing}")

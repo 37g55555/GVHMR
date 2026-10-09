@@ -60,16 +60,9 @@ pipeline:
         weights:
             token_ce: 1.0
             cr_j3d: 500.
-            transl_c: 1.
             cr_verts: 500.
             j2d: 1000.
             verts2d: 1000.
-
-            transl_w: 1.
-            static_conf_bce: 1.
-
-        static_conf:
-            vel_thr: 0.15
 
 data:
     loader_opts:

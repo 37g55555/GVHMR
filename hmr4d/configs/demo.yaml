@@ -30,7 +30,6 @@ pipeline:
       temp_end: 0.01
       temp_end_ratio: 1.0
     weights: null
-    static_conf: null
 
 ckpt_path: inputs/checkpoints/gvhmr/gvhmr_masked_pose_release.ckpt
 

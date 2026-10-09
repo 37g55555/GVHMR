@@ -32,6 +32,7 @@ def train(cfg: DictConfig) -> None:
     """Train/Test"""
     Log.info(f"[Exp Name]: {cfg.exp_name}")
     if cfg.task == "fit":
+        assert cfg.ckpt_path is not None or cfg.resume_mode is not None
         Log.info(f"[GPU x Batch] = {cfg.pl_trainer.devices} x {cfg.data.loader_opts.train.batch_size}")
     pl.seed_everything(cfg.seed)
 

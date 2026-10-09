@@ -24,10 +24,9 @@ from pytorch3d.transforms import (
     axis_angle_to_matrix,
     matrix_to_axis_angle,
 )
-from hmr4d.utils.geo.hmr_cam import compute_bbox_info_bedlam, compute_transl_full_cam, get_a_pred_cam, project_to_bi01
+from hmr4d.utils.geo.hmr_cam import compute_bbox_info_bedlam, compute_transl_full_cam, project_to_bi01
 from hmr4d.utils.geo.hmr_global import (
     rollout_local_transl_vel,
-    get_static_joint_mask,
     get_tgtcoord_rootparam,
 )
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines
@@ -154,27 +153,14 @@ class Pipeline(nn.Module):
 
         # ========== Compute Loss ========== #
         total_loss = 0
-        mask = inputs["mask"]["valid"]  # (B, L)
-
-        # 1. Simple loss: MSE
-        pred_x = model_output["pred_x"]  # (B, L, 25)
-        target_x = self.endecoder.encode(inputs)  # (B, L, 25)
-        simple_loss = F.mse_loss(pred_x, target_x, reduction="none")
-        mask_simple = mask[:, :, None].expand(-1, -1, pred_x.size(2)).clone()  # (B, L, C)
-        mask_simple[inputs["mask"]["spv_incam_only"], :, 16:] = False  # 3dpw training
-        simple_loss = (simple_loss * mask_simple).mean()
-        total_loss += simple_loss
-        outputs["simple_loss"] = simple_loss
-
-        # 2. Masked-token classification loss
+        # 1. Masked-token classification loss
         token_loss = F.cross_entropy(pose_logits[pose_mask], token_ids[pose_mask])
         total_loss += token_loss * self.weights.token_ce
         outputs["token_loss"] = token_loss
 
-        # 3. Extra loss
+        # 2. Extra loss
         extra_funcs = [
             compute_extra_incam_loss,
-            compute_extra_global_loss,
         ]
         for extra_func in extra_funcs:
             extra_loss, extra_loss_dict = extra_func(inputs, outputs, self)
@@ -198,11 +184,8 @@ def randomly_set_null_condition(f_condition, uncond_prob=0.1):
 
 
 def compute_extra_incam_loss(inputs, outputs, ppl):
-    model_output = outputs["model_output"]
-    decode_dict = outputs["decode_dict"]
     endecoder = ppl.endecoder
     weights = ppl.weights
-    args = ppl.args
 
     extra_loss_dict = {}
     extra_loss = 0
@@ -224,38 +207,6 @@ def compute_extra_incam_loss(inputs, outputs, ppl):
         cr_j3d_loss = (cr_j3d_loss * mask[..., None, None]).mean()
         extra_loss += cr_j3d_loss * weights.cr_j3d
         extra_loss_dict["cr_j3d_loss"] = cr_j3d_loss
-
-    # Reprojection (to align with image)
-    if weights.transl_c > 0.0:
-        # pred_transl = decode_dict["transl"]  # (B, L, 3)
-        # gt_transl = inputs["smpl_params_c"]["transl"]
-        # transl_c_loss = F.l1_loss(pred_transl, gt_transl, reduction="none")
-        # transl_c_loss = (transl_c_loss * mask[..., None]).mean()
-
-        # Instead of supervising transl, we convert gt to pred_cam (prevent divide 0)
-        pred_cam = model_output["pred_cam"]  # (B, L, 3)
-        gt_transl = inputs["smpl_params_c"]["transl"]  # (B, L, 3)
-        gt_pred_cam = get_a_pred_cam(gt_transl, inputs["bbx_xys"], inputs["K_fullimg"])  # (B, L, 3)
-        gt_pred_cam[gt_pred_cam.isinf()] = -1  # this will be handled by valid_mask
-        # (compute_transl_full_cam(gt_pred_cam, inputs["bbx_xys"], inputs["K_fullimg"]) - gt_transl).abs().max()
-
-        # Skip gts that are not good during random construction
-        gt_j3d_z_min = inputs["gt_j3d"][..., 2].min(dim=-1)[0]
-        valid_mask = (
-            (gt_j3d_z_min > 0.3)
-            * (gt_pred_cam[..., 0] > 0.3)
-            * (gt_pred_cam[..., 0] < 5.0)
-            * (gt_pred_cam[..., 1] > -3.0)
-            * (gt_pred_cam[..., 1] < 3.0)
-            * (gt_pred_cam[..., 2] > -3.0)
-            * (gt_pred_cam[..., 2] < 3.0)
-            * (inputs["bbx_xys"][..., 2] > 0)
-        )[..., None]
-        transl_c_loss = F.mse_loss(pred_cam, gt_pred_cam, reduction="none")
-        transl_c_loss = (transl_c_loss * mask[..., None] * valid_mask).mean()
-
-        extra_loss_dict["transl_c_loss"] = transl_c_loss
-        extra_loss += transl_c_loss * weights.transl_c
 
     if weights.j2d > 0.0:
         # prevent divide 0 or small value to overflow(fp16)
@@ -322,48 +273,6 @@ def compute_extra_incam_loss(inputs, outputs, ppl):
 
         extra_loss += verts2d_loss * weights.verts2d
         extra_loss_dict["verts2d_loss"] = verts2d_loss
-
-    return extra_loss, extra_loss_dict
-
-
-def compute_extra_global_loss(inputs, outputs, ppl):
-    decode_dict = outputs["decode_dict"]
-    endecoder = ppl.endecoder
-    weights = ppl.weights
-    args = ppl.args
-
-    extra_loss_dict = {}
-    extra_loss = 0
-    mask = inputs["mask"]["valid"].clone()  # (B, L)
-    mask[inputs["mask"]["spv_incam_only"]] = False
-
-    if weights.transl_w > 0:
-        # compute pred_transl_w by rollout
-        gt_transl_w = inputs["smpl_params_w"]["transl"]
-        gt_global_orient_w = inputs["smpl_params_w"]["global_orient"]
-        local_transl_vel = decode_dict["local_transl_vel"]
-        pred_transl_w = rollout_local_transl_vel(local_transl_vel, gt_global_orient_w, gt_transl_w[:, [0]])
-
-        trans_w_loss = F.l1_loss(pred_transl_w, gt_transl_w, reduction="none")
-        trans_w_loss = (trans_w_loss * mask[..., None]).mean()
-        extra_loss += trans_w_loss * weights.transl_w
-        extra_loss_dict["transl_w_loss"] = trans_w_loss
-
-    # Static-Conf loss
-    if weights.static_conf_bce > 0:
-        # Compute gt by thresholding velocity
-        vel_thr = args.static_conf.vel_thr
-        assert vel_thr > 0
-        joint_ids = [7, 10, 8, 11, 20, 21]  # [L_Ankle, L_foot, R_Ankle, R_foot, L_wrist, R_wrist]
-        gt_w_j3d = endecoder.fk_v2(**inputs["smpl_params_w"])  # (B, L, J=22, 3)
-        static_gt = get_static_joint_mask(gt_w_j3d, vel_thr=vel_thr, repeat_last=True)  # (B, L, J)
-        static_gt = static_gt[:, :, joint_ids].float()  # (B, L, J')
-        pred_static_conf_logits = outputs["model_output"]["static_conf_logits"]
-
-        static_conf_loss = F.binary_cross_entropy_with_logits(pred_static_conf_logits, static_gt, reduction="none")
-        static_conf_loss = (static_conf_loss * mask[..., None]).mean()
-        extra_loss += static_conf_loss * weights.static_conf_bce
-        extra_loss_dict["static_conf_loss"] = static_conf_loss
 
     return extra_loss, extra_loss_dict
 

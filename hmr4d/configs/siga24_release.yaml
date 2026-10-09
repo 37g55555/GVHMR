@@ -24,7 +24,6 @@ pipeline:
       temp_end: 0.01
       temp_end_ratio: 1.0
     weights: null
-    static_conf: null
 model:
   _target_: hmr4d.model.gvhmr.gvhmr_pl_demo.DemoPL
   pipeline: ${pipeline}
