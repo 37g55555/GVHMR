@@ -621,7 +621,8 @@ class MaskedPoseModel(nn.Module):
         rand_mask_probs = cosine_schedule(rand_time)
         num_token_masked = (valid_tokens.flatten(1).sum(dim=-1) * rand_mask_probs).round().clamp(min=1)
 
-        logits = self(masked_ids, gamma_gv, root_velocity, visual_context, length, codebook)
+        with torch.autocast("cuda", enabled=torch.is_autocast_enabled(), cache_enabled=False):
+            logits = self(masked_ids, gamma_gv, root_velocity, visual_context, length, codebook)
         logits = einops.rearrange(logits, "b f j c -> b (f j) c")
         pred_ids = logits.argmax(dim=-1)
         probs = logits.softmax(dim=-1)
