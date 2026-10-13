@@ -5,6 +5,7 @@ from torch.cuda.amp import autocast
 import numpy as np
 from einops import einsum, rearrange, repeat
 from hydra.utils import instantiate
+from omegaconf import OmegaConf
 from hmr4d.utils.pylogger import Log
 from hmr4d.utils.net_utils import gaussian_smooth
 
@@ -15,7 +16,7 @@ from hmr4d.model.gvhmr.utils.postprocess import (
     pp_static_joint_cam,
 )
 from hmr4d.model.gvhmr.utils import stats_compose
-from hmr4d.network.gvhmr.masked_pose import MaskedPoseModel
+from hmr4d.network.gvhmr.masked_pose import MaskedPoseModel, TemporalSmoother
 from hmr4d.network.gvhmr.pose_tokenizer import PoseTokenizer
 
 from pytorch3d.transforms import (
@@ -49,6 +50,16 @@ class Pipeline(nn.Module):
         self.endecoder: EnDecoder = instantiate(args.endecoder_opt, _recursive_=False)
 
         self.pose_tokenizer = PoseTokenizer(args.pose_tokenizer_ckpt)
+        self.pose_tokenizer.eval()
+        self.smoother = TemporalSmoother(
+            OmegaConf.create(
+                {
+                    "num_tokens": self.pose_tokenizer.num_tokens,
+                    "dim_in": self.pose_tokenizer.code_dim,
+                    **dict(args.smoother),
+                }
+            )
+        )
         self.masked_pose = MaskedPoseModel(
             num_tokens=self.pose_tokenizer.num_tokens,
             codebook_size=self.pose_tokenizer.codebook_size,
@@ -64,7 +75,22 @@ class Pipeline(nn.Module):
     def train(self, mode=True):
         super().train(mode)
         self.denoiser3d.eval()
+        self.pose_tokenizer.eval()
         return self
+
+    def decode_pose(self, tokens, length):
+        batch_size, num_frames = tokens.shape[:2]
+        tokens = torch.cat(
+            [
+                F.pad(
+                    self.smoother(tokens[b : b + 1, : length[b]]),
+                    (0, 0, 0, 0, 0, num_frames - length[b]),
+                )
+                for b in range(batch_size)
+            ],
+            dim=0,
+        )
+        return self.pose_tokenizer.decode_features(tokens, batch_size, num_frames)
 
     # ========== Training ========== #
 
@@ -104,7 +130,8 @@ class Pipeline(nn.Module):
             )
             temperature = self.masked_pose.get_training_temperature(train_progress)
             token_probabilities = F.gumbel_softmax(pose_logits, tau=temperature, hard=True, dim=-1)
-            body_pose = self.pose_tokenizer.decode_probabilities(token_probabilities)
+            tokens = torch.matmul(token_probabilities, self.pose_tokenizer.codebook)
+            body_pose = self.decode_pose(tokens, length)
         else:
             token_ids = self.masked_pose.generate(
                 gamma_gv,
@@ -113,7 +140,8 @@ class Pipeline(nn.Module):
                 length,
                 self.pose_tokenizer.codebook,
             )
-            body_pose = self.pose_tokenizer.decode_ids(token_ids)
+            tokens = F.embedding(token_ids, self.pose_tokenizer.codebook)
+            body_pose = self.decode_pose(tokens, length)
 
         decode_dict["body_pose"] = body_pose
         outputs.update({"model_output": model_output, "decode_dict": decode_dict})
@@ -161,6 +189,7 @@ class Pipeline(nn.Module):
         # 2. Extra loss
         extra_funcs = [
             compute_extra_incam_loss,
+            compute_extra_temporal_loss,
         ]
         for extra_func in extra_funcs:
             extra_loss, extra_loss_dict = extra_func(inputs, outputs, self)
@@ -203,8 +232,8 @@ def compute_extra_incam_loss(inputs, outputs, ppl):
 
     # Root aligned C-MPJPE Loss
     if weights.cr_j3d > 0.0:
-        cr_j3d_loss = F.mse_loss(pred_cr_j3d, gt_cr_j3d, reduction="none")
-        cr_j3d_loss = (cr_j3d_loss * mask[..., None, None]).mean()
+        cr_j3d_loss = torch.norm(pred_cr_j3d - gt_cr_j3d, p=2, dim=-1)
+        cr_j3d_loss = cr_j3d_loss[mask].mean()
         extra_loss += cr_j3d_loss * weights.cr_j3d
         extra_loss_dict["cr_j3d_loss"] = cr_j3d_loss
 
@@ -228,8 +257,10 @@ def compute_extra_incam_loss(inputs, outputs, ppl):
             * (gt_j2d_01[..., 1] < 1.0)
         )[..., None]
         valid_mask[~mask_reproj] = False  # Do not supervise on 3dpw
-        j2d_loss = F.mse_loss(pred_j2d_01, gt_j2d_01, reduction="none")
-        j2d_loss = (j2d_loss * mask[..., None, None] * valid_mask).mean()
+        pred_j2d = 2 * pred_j2d_01 - 1
+        gt_j2d = 2 * gt_j2d_01 - 1
+        j2d_loss = (pred_j2d - gt_j2d).abs()
+        j2d_loss = (j2d_loss * valid_mask)[mask].mean()
 
         extra_loss += j2d_loss * weights.j2d
         extra_loss_dict["j2d_loss"] = j2d_loss
@@ -241,39 +272,52 @@ def compute_extra_incam_loss(inputs, outputs, ppl):
         pred_cr_verts437 = pred_c_verts437 - root_
 
         gt_cr_verts437 = inputs["gt_cr_verts437"]  # (B, L, 437, 3)
-        cr_vert_loss = F.mse_loss(pred_cr_verts437, gt_cr_verts437, reduction="none")
-        cr_vert_loss = (cr_vert_loss * mask[:, :, None, None]).mean()
+        cr_vert_loss = torch.norm(pred_cr_verts437 - gt_cr_verts437, p=2, dim=-1)
+        cr_vert_loss = cr_vert_loss[mask].mean()
         extra_loss += cr_vert_loss * weights.cr_verts
         extra_loss_dict["cr_vert_loss"] = cr_vert_loss
 
-    if weights.verts2d > 0:
-        gt_c_verts437 = inputs["gt_c_verts437"]  # (B, L, 437, 3)
+    return extra_loss, extra_loss_dict
 
-        # prevent divide 0 or small value to overflow(fp16)
-        reproj_z_thr = 0.3
-        pred_c_verts437_z0_mask = pred_c_verts437[..., 2].abs() <= reproj_z_thr
-        pred_c_verts437[pred_c_verts437_z0_mask] = reproj_z_thr
-        gt_c_verts437_z0_mask = gt_c_verts437[..., 2].abs() <= reproj_z_thr
-        gt_c_verts437[gt_c_verts437_z0_mask] = reproj_z_thr
 
-        pred_verts2d_01 = project_to_bi01(pred_c_verts437, inputs["bbx_xys"], inputs["K_fullimg"])
-        gt_verts2d_01 = project_to_bi01(gt_c_verts437, inputs["bbx_xys"], inputs["K_fullimg"])  # (B, L, 437, 2)
+def compute_extra_temporal_loss(inputs, outputs, ppl):
+    endecoder = ppl.endecoder
+    weights = ppl.weights
+    mask = inputs["mask"]["valid"]
+    valid_mask = mask[:, 1:] & mask[:, :-1]
+    valid_mask = valid_mask & ~inputs["mask"]["spv_incam_only"][:, None]
 
-        valid_mask = (
-            (gt_c_verts437[..., 2] > reproj_z_thr)
-            * (pred_c_verts437[..., 2] > reproj_z_thr)  # Be safe
-            * (gt_verts2d_01[..., 0] > 0.0)
-            * (gt_verts2d_01[..., 0] < 1.0)
-            * (gt_verts2d_01[..., 1] > 0.0)
-            * (gt_verts2d_01[..., 1] < 1.0)
-        )[..., None]
-        valid_mask[~mask_reproj] = False  # Do not supervise on 3dpw
-        verts2d_loss = F.mse_loss(pred_verts2d_01, gt_verts2d_01, reduction="none")
-        verts2d_loss = (verts2d_loss * mask[..., None, None] * valid_mask).mean()
+    pred_c_j3d = endecoder.fk_v2(**outputs["pred_smpl_params_incam"])
+    gt_c_j3d = endecoder.fk_v2(**inputs["smpl_params_c"])
+    gt_w_j3d = endecoder.fk_v2(**inputs["smpl_params_w"])
+    R_w = axis_angle_to_matrix(inputs["smpl_params_w"]["global_orient"])
+    R_c = axis_angle_to_matrix(inputs["smpl_params_c"]["global_orient"])
+    R_c2w = R_w @ R_c.mT
+    pred_w_j3d = (pred_c_j3d - gt_c_j3d[:, :, :1]) @ R_c2w.mT + gt_w_j3d[:, :, :1]
 
-        extra_loss += verts2d_loss * weights.verts2d
-        extra_loss_dict["verts2d_loss"] = verts2d_loss
+    gt_vel = gt_w_j3d[:, 1:] - gt_w_j3d[:, :-1]
+    pred_diff_vel = pred_w_j3d[:, 1:] - pred_w_j3d[:, :-1]
+    loss_j3d_vel = torch.norm(pred_diff_vel - gt_vel, p=2, dim=-1)
+    loss_j3d_vel = (loss_j3d_vel * valid_mask[..., None]).sum() / (
+        valid_mask.sum() * gt_vel.shape[2]
+    ).clamp(min=1)
 
+    stationary_joint_index_list = [7, 10, 8, 11]
+    fps = inputs["fps"].to(gt_vel)[:, None, None]
+    contact_lbl_gt = torch.norm(gt_vel[:, :, stationary_joint_index_list], dim=-1) * fps
+    contact_lbl_gt = (contact_lbl_gt < ppl.args.contact_vel_thres) & valid_mask[..., None]
+    stationary_joint_vel = (
+        pred_w_j3d[:, 1:, stationary_joint_index_list]
+        - pred_w_j3d[:, 0:-1, stationary_joint_index_list]
+    ) * fps[..., None]
+    stationary_joint_vel = torch.norm(stationary_joint_vel, dim=-1)
+    thresh = ppl.args.skating_vel_thres
+    stationary_joint_violation = torch.clamp(stationary_joint_vel - thresh, min=0.0)
+    weight_sum = contact_lbl_gt.sum() + 1e-6
+    loss_skating = (stationary_joint_violation * contact_lbl_gt).sum() / weight_sum
+
+    extra_loss = weights.j3d_vel * loss_j3d_vel + weights.skating * loss_skating
+    extra_loss_dict = {"j3d_vel_loss": loss_j3d_vel, "skating_loss": loss_skating}
     return extra_loss, extra_loss_dict
 
 

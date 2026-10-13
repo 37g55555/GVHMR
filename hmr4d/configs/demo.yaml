@@ -11,6 +11,11 @@ pipeline:
     endecoder_opt: ${endecoder}
     normalize_cam_angvel: True
     pose_tokenizer_ckpt: inputs/checkpoints/tokenhmr/tokenizer.pth
+    smoother:
+      share_weights: true
+      dim_hidden: 64
+      kernel_size: 5
+      num_layers: 2
     masked_pose:
       dim: 256
       motion_depth: 4
@@ -19,8 +24,8 @@ pipeline:
       mlp_ratio: 4.0
       dropout: 0.0
       attn_len: 60
-      mask_modes: [random, joint, frame]
-      mask_mode_weights: [0.4, 0.2, 0.2]
+      mask_modes: [inference, random]
+      mask_mode_weights: [0.4, 0.4]
       mask_tau: 1.0
       random_replace_prob: 0.1
       mask_replace_prob: 1.0

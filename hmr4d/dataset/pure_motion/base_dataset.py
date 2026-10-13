@@ -150,6 +150,7 @@ class BaseDataset(Dataset):
         return_data = {
             "meta": {"data_name": data_name, "idx": idx, "T_w2c": T_w2c},
             "length": length,
+            "fps": 30,
             "smpl_params_c": smpl_params_c,
             "smpl_params_w": smpl_params_w,
             "R_c2gv": R_c2gv,  # (F, 3, 3)

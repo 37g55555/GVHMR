@@ -158,6 +158,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         return_data = {
             "meta": {"data_name": "bedlam", "idx": idx},
             "length": length,
+            "fps": 30,
             "smpl_params_c": smpl_params_c,
             "smpl_params_w": smpl_params_w,
             "R_c2gv": R_c2gv,  # (F, 3, 3)

@@ -154,6 +154,7 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         return_data = {
             "meta": {"data_name": "h36m", "idx": idx, "vid": data["vid"]},
             "length": length,
+            "fps": 25,
             "smpl_params_c": smpl_params_c,
             "smpl_params_w": smpl_params_w,
             "R_c2gv": R_c2gv,  # (F, 3, 3)

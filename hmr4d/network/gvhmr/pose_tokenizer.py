@@ -15,11 +15,12 @@ class nonlinearity(nn.Module):
         super().__init__()
 
     def forward(self, x):
+        # swish
         return x * torch.sigmoid(x)
 
 
 class ResConv1DBlock(nn.Module):
-    def __init__(self, n_in, n_state, dilation=1, activation="silu", norm=None, dropout=None):
+    def __init__(self, n_in, n_state, dilation=1, activation='silu', norm=None, dropout=None):
         super().__init__()
         padding = dilation
         self.norm = norm
@@ -32,6 +33,7 @@ class ResConv1DBlock(nn.Module):
         elif norm == "BN":
             self.norm1 = nn.BatchNorm1d(num_features=n_in, eps=1e-6, affine=True)
             self.norm2 = nn.BatchNorm1d(num_features=n_in, eps=1e-6, affine=True)
+
         else:
             self.norm1 = nn.Identity()
             self.norm2 = nn.Identity()
@@ -39,15 +41,20 @@ class ResConv1DBlock(nn.Module):
         if activation == "relu":
             self.activation1 = nn.ReLU()
             self.activation2 = nn.ReLU()
+
         elif activation == "silu":
             self.activation1 = nonlinearity()
             self.activation2 = nonlinearity()
+
         elif activation == "gelu":
             self.activation1 = nn.GELU()
             self.activation2 = nn.GELU()
 
+
+
         self.conv1 = nn.Conv1d(n_in, n_state, 3, 1, padding, dilation)
-        self.conv2 = nn.Conv1d(n_state, n_in, 1, 1, 0)
+        self.conv2 = nn.Conv1d(n_state, n_in, 1, 1, 0,)
+
 
     def forward(self, x):
         x_orig = x
@@ -73,19 +80,10 @@ class ResConv1DBlock(nn.Module):
 
 
 class Resnet1D(nn.Module):
-    def __init__(self, n_in, n_depth, dilation_growth_rate=1, reverse_dilation=True, activation="relu", norm=None):
+    def __init__(self, n_in, n_depth, dilation_growth_rate=1, reverse_dilation=True, activation='relu', norm=None):
         super().__init__()
 
-        blocks = [
-            ResConv1DBlock(
-                n_in,
-                n_in,
-                dilation=dilation_growth_rate**depth,
-                activation=activation,
-                norm=norm,
-            )
-            for depth in range(n_depth)
-        ]
+        blocks = [ResConv1DBlock(n_in, n_in, dilation=dilation_growth_rate ** depth, activation=activation, norm=norm) for depth in range(n_depth)]
         if reverse_dilation:
             blocks = blocks[::-1]
 
@@ -94,38 +92,37 @@ class Resnet1D(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-
 class PoseSPEncoderV1(nn.Module):
-    def __init__(
-        self,
-        rot_type="rotmat",
-        output_emb_width=512,
-        down_t=1,
-        stride_t=2,
-        token_size_mul=1,
-        width=512,
-        depth=2,
-        input_dim=9,
-        dilation_growth_rate=3,
-        inp_preprocess=True,
-        target_tokens=None,
-    ):
+    def __init__(self,
+                 rot_type = 'rotmat',
+                 output_emb_width = 512,
+                 down_t = 1,
+                 stride_t = 2,
+                 token_size_mul = 1,
+                 width = 512,
+                 depth = 2,
+                 input_dim = 9,
+                 dilation_growth_rate = 3,
+                 inp_preprocess = True,
+                 target_tokens = None):
         super(PoseSPEncoderV1, self).__init__()
 
         encoder_layers = []
         num_joints = 21
         filter_t, pad_t = stride_t * 2, stride_t // 2
         self.inp_preprocess = inp_preprocess
+        # If set, we will interpolate the final latent sequence to exactly target_tokens (enables arbitrary token counts)
         self.target_tokens = target_tokens
         encoder_layers.append(nn.Conv1d(input_dim, width, 3, 1, 1))
         encoder_layers.append(nn.ReLU())
 
-        encoder_layers.append(nn.Upsample(((num_joints * 2) // 10) * 10))
+        # Make num of tokens in multiple of 10
+        encoder_layers.append(nn.Upsample(((num_joints*2)//10)*10))
         encoder_layers.append(nn.Conv1d(width, width, 3, 1, 1))
         encoder_layers.append(nn.ReLU())
 
-        for _ in range(token_size_mul - 1):
-            encoder_layers.append(nn.Upsample(scale_factor=2, mode="nearest"))
+        for _ in range(token_size_mul-1):
+            encoder_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
             encoder_layers.append(nn.Conv1d(width, width, 3, 1, 1))
             encoder_layers.append(nn.ReLU())
 
@@ -133,7 +130,7 @@ class PoseSPEncoderV1(nn.Module):
             input_dim = width
             block = nn.Sequential(
                 nn.Conv1d(input_dim, width, filter_t, stride_t, pad_t),
-                Resnet1D(width, depth, dilation_growth_rate, activation="relu", norm=False),
+                Resnet1D(width, depth, dilation_growth_rate, activation='relu', norm=False),
             )
             encoder_layers.append(block)
 
@@ -141,34 +138,35 @@ class PoseSPEncoderV1(nn.Module):
         self.encoder = nn.Sequential(*encoder_layers)
 
     def preprocess(self, x):
+        # (bs, num_joints, 3, 3) -> (bs, num_joints, 9) -> (bs, 9, num_joints)
         x = x.view(x.shape[0], x.shape[1], -1)
-        x = x.permute(0, 2, 1)
+        x = x.permute(0,2,1)
         return x
 
     def forward(self, x, global_step=None):
         if self.inp_preprocess:
             x = self.preprocess(x)
         x = self.encoder(x)
+        # Resample to arbitrary token length if requested (allows overriding default formula-based length)
         if self.target_tokens is not None and x.shape[-1] != self.target_tokens:
-            x = F.interpolate(x, size=int(self.target_tokens), mode="linear", align_corners=False)
+            # Use linear interpolation for smoother feature resizing
+            x = F.interpolate(x, size=int(self.target_tokens), mode='linear', align_corners=False)
         return x
 
 
 class PoseSPDecoderV1(nn.Module):
-    def __init__(
-        self,
-        rot_type="rotmat",
-        output_emb_width=512,
-        down_t=1,
-        width=512,
-        depth=2,
-        token_size_div=1,
-        num_tokens=10,
-        dilation_growth_rate=3,
-        num_joints=21,
-        output_dim=6,
-        out_postprocess=True,
-    ):
+    def __init__(self,
+                 rot_type='rotmat',
+                 output_emb_width = 512,
+                 down_t = 1,
+                 width = 512,
+                 depth = 2,
+                 token_size_div = 1,
+                 num_tokens = 10,
+                 dilation_growth_rate = 3,
+                 num_joints=21,
+                 output_dim = 6,
+                 out_postprocess = True):
         super(PoseSPDecoderV1, self).__init__()
 
         decoder_layers = []
@@ -187,15 +185,8 @@ class PoseSPDecoderV1(nn.Module):
         for i in range(down_t):
             out_dim = width
             block = nn.Sequential(
-                Resnet1D(
-                    width,
-                    depth,
-                    dilation_growth_rate,
-                    reverse_dilation=True,
-                    activation="relu",
-                    norm=False,
-                ),
-                nn.Conv1d(width, out_dim, 3, 1, 1),
+                Resnet1D(width, depth, dilation_growth_rate, reverse_dilation=True, activation='relu', norm=False),
+                nn.Conv1d(width, out_dim, 3, 1, 1)
             )
             decoder_layers.append(block)
 
@@ -204,7 +195,8 @@ class PoseSPDecoderV1(nn.Module):
         self.decoder = nn.Sequential(*decoder_layers)
 
     def postprocess(self, x):
-        x = x.permute(0, 2, 1)
+        # (bs, 6, num_joints) -> (bs, num_joints, 6)
+        x = x.permute(0,2,1)
         return x
 
     def forward(self, x):
@@ -217,18 +209,17 @@ class PoseSPDecoderV1(nn.Module):
             return x
         pred_pose = self.postprocess(x)
         pred_pose_6d, pred_pose_rotmat = None, None
-        if self.rot_type == "rot6d":
+        if self.rot_type == 'rot6d':
             pred_pose_6d = pred_pose
             pred_pose_rotmat = rotation_6d_to_matrix(pred_pose.reshape(-1, 6)).view(batch_size, self.num_joints, 3, 3)
-        elif self.rot_type == "rotmat":
+        elif self.rot_type == 'rotmat':
             NotImplementedError()
 
-        output.update(
-            {
-                "pred_pose_body_6d": pred_pose_6d,
-                "pred_pose_body_rotmat": pred_pose_rotmat,
-            }
-        )
+        output.update({
+            'pred_pose_body_6d': pred_pose_6d,
+            'pred_pose_body_rotmat': pred_pose_rotmat,
+        })
+
         return output
 
 

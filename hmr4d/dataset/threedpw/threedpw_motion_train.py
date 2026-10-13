@@ -107,6 +107,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         return_data = {
             "meta": data["meta"],
             "length": length,
+            "fps": 25,
             "smpl_params_c": smpl_params_c,
             "smpl_params_w": smpl_params_w_zero,
             "R_c2gv": torch.zeros(length, 3, 3),  # (F, 3, 3)
