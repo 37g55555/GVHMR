@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions.categorical import Categorical
 from omegaconf import OmegaConf
 
 from hmr4d.network.base_arch.embeddings.rotary_embedding import ROPE
@@ -174,11 +175,11 @@ class Attention(nn.Module):
                 qkv[1],
                 qkv[2],
             )  # make torchscript happy (cannot use tensor as tuple)
-
+            
             # Apply RoPE to queries and keys
-            q = self.rope.rotate_queries_or_keys(q)  # B*J, N, F, C
-            k = self.rope.rotate_queries_or_keys(k)  # B*J, N, F, C
-
+            q = self.rope.rotate_queries_or_keys(q)  # (B*J, heads, F, head_dim)
+            k = self.rope.rotate_queries_or_keys(k)  # (B*J, heads, F, head_dim)
+            
             key_mask = valid_mask[:, None].expand(-1, J, -1).reshape(B * J, F)
             x = self.forward_attention(q, k, v, key_mask)
             x = x.reshape(B, J, F, C).permute(0, 2, 1, 3)
@@ -214,7 +215,7 @@ class Attention(nn.Module):
                 start = max(0, i - self.attn_len)
                 end = min(N, i + self.attn_len + 1)
                 attn_mask[i, start:end] = True
-
+            
             attn_mask = attn_mask.reshape(1, 1, N, N).expand(B, H, -1, -1)
             attn = attn.masked_fill(attn_mask.logical_not(), float("-inf"))
             attn = attn.masked_fill(~key_mask[:, None, None], float("-inf"))
@@ -311,7 +312,7 @@ class Block(nn.Module):
             x_s = x + self.drop_path(self.attn_s(self.norm1_s(x), valid_mask))
             x_s = x_s + self.drop_path(self.mlp_s(self.norm2_s(x_s)))
             if self.att_fuse:
-                #             x_s, x_t: [B, F, J, C]
+                # x_s, x_t: (B, F, J, C)
                 B, F, J, C = x_s.shape
                 alpha = torch.cat([x_s, x_t], dim=-1)
                 alpha = self.ts_attn(alpha).reshape(B, F, J, C, 2)
@@ -391,11 +392,24 @@ def uniform(shape, device=None):
     return torch.zeros(shape, device=device).float().uniform_(0, 1)
 
 
+# Get a random subset of TRUE mask, with prob
 def get_mask_subset_prob(mask, prob):
     subset_mask = torch.bernoulli(mask, p=prob) & mask
     return subset_mask
 
 
+def top_k(logits, k = 1, thres = 0.9, dim = 1):
+    if k is None:
+        k = math.ceil((1 - thres) * logits.shape[dim])
+    val, ind = logits.topk(k, dim = dim)
+    probs = torch.full_like(logits, float('-inf'))
+    probs.scatter_(dim, ind, val)
+    return probs
+
+
+# noise schedules
+
+# More on large value, less on small
 def cosine_schedule(t):
     return torch.cos(t * math.pi * 0.5)
 
@@ -411,7 +425,7 @@ class TemporalSmoother(nn.Module):
 
         self.num_tokens = cfg.num_tokens
         self.share_weights = cfg.share_weights
-
+        
         if not self.share_weights:
             self.dim_in = self.dim_out = cfg.dim_in * self.num_tokens
 
@@ -444,7 +458,7 @@ class TemporalSmoother(nn.Module):
         B, F, J, C = x.shape
         if self.share_weights:
             out = einops.rearrange(x, "b f j c -> (b j) c f")
-            out = self.net(out)
+            out = self.net(out)  # → [B*J, C, F]
             out = einops.rearrange(out, "(b j) c f -> b f j c", b=B)
         else:
             out = einops.rearrange(x, "b f j c -> b (j c) f")
@@ -509,12 +523,16 @@ class MaskedPoseModel(nn.Module):
         self.register_buffer("mask_token", torch.zeros(code_dim), persistent=False)
         self.m_token_embed = nn.Linear(code_dim, dim)
         self.m_traj_embed = nn.Linear(9, dim)
-        self.m_pos_enc = nn.Parameter(torch.zeros(1, 1, num_tokens + 1, dim))
+        self.m_pos_enc = torch.nn.Parameter(
+            torch.zeros(1, 1, num_tokens + 1, dim)
+        )
         trunc_normal_(self.m_pos_enc, std=0.02)
         self.m_transformer = DSTFormer(transformer_cfg, dim, motion_depth)
 
         self.context_projection = nn.Linear(context_dim, dim)
-        self.d_pos_enc = nn.Parameter(torch.zeros(1, 1, num_tokens + 2, dim))
+        self.d_pos_enc = torch.nn.Parameter(
+            torch.zeros(1, 1, num_tokens + 2, dim)
+        )
         trunc_normal_(self.d_pos_enc, std=0.02)
         self.d_transformer = DSTFormer(transformer_cfg, dim, decoder_depth)
         self.d_pose_regressor = nn.Linear(dim, codebook_size)
@@ -531,28 +549,39 @@ class MaskedPoseModel(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def embed_tokens(self, token_ids, codebook):
-        code_ids = token_ids.clamp_max(self.codebook_size - 1)
-        embeddings = F.embedding(code_ids, codebook)
-        mask_token = self.mask_token.to(embeddings)
-        return torch.where((token_ids == self.mask_id)[..., None], mask_token, embeddings)
+        token_emb = torch.cat(
+            [codebook, self.mask_token.to(codebook).unsqueeze(0)], dim=0
+        )  # add zero token for mask
+        x = F.embedding(token_ids, token_emb)
+        return x
 
     def motion_encode(self, token_ids, gamma_gv, root_velocity, valid_mask, codebook):
-        tokens = self.m_token_embed(self.embed_tokens(token_ids, codebook))
-        traj_input = self.m_traj_embed(torch.cat([gamma_gv, root_velocity], dim=-1)).unsqueeze(2)
+        tokens = self.embed_tokens(token_ids, codebook)
+        # embed to same dimension
+        tokens = self.m_token_embed(tokens)
+        traj_input = self.m_traj_embed(torch.cat([gamma_gv, root_velocity], dim=-1))
+        traj_input = traj_input.unsqueeze(2)
+
         motion_feat = torch.cat([tokens, traj_input], dim=2)
+        # learnable spatial PE
         motion_feat = motion_feat + self.m_pos_enc
         motion_feat = self.m_transformer(motion_feat, valid_mask)
         return motion_feat
 
     def decode(self, motion_feat, visual_context, valid_mask):
-        local_pose_feat = motion_feat[:, :, : self.num_tokens]
-        traj_feat = motion_feat[:, :, -1:]
+        # Decode token logits from motion + video features
+
+        local_pose_feat = motion_feat[:, :, : self.num_tokens, :]
+        traj_feat = motion_feat[:, :, -1:, :]
         visual_feat = self.context_projection(visual_context).unsqueeze(2)
         feat = torch.cat([local_pose_feat, visual_feat, traj_feat], dim=2)
+        # learnable spatial PE
         feat = feat + self.d_pos_enc
         feat = self.d_transformer(feat, valid_mask)
-        local_pose_feat = feat[:, :, : self.num_tokens]
-        return self.d_pose_regressor(local_pose_feat)
+
+        local_pose_feat = feat[:, :, : self.num_tokens, :]
+        local_pose_logits = self.d_pose_regressor(local_pose_feat)
+        return local_pose_logits
 
     def forward(self, token_ids, gamma_gv, root_velocity, visual_context, length, codebook):
         valid_mask = length_to_mask(length, token_ids.shape[1])
@@ -560,19 +589,23 @@ class MaskedPoseModel(nn.Module):
         return self.decode(motion_feat, visual_context, valid_mask)
 
     def get_random_mask(self, valid_tokens, ratios):
-        B = valid_tokens.shape[0]
-        flat_valid = valid_tokens.flatten(1)
-        random_order = torch.rand(flat_valid.shape, device=flat_valid.device).masked_fill(~flat_valid, 2.0)
+        B, F, J = valid_tokens.shape
+        N = F * J
+        flat_valid = valid_tokens.reshape(B, N)
+        random_order = torch.rand((B, N), device=valid_tokens.device).masked_fill(~flat_valid, 2.0)
         ranks = random_order.argsort(dim=-1).argsort(dim=-1)
-        num_token_masked = (flat_valid.sum(dim=-1) * ratios).round().long().clamp_min(1)
-        return ((ranks < num_token_masked[:, None]) & flat_valid).reshape_as(valid_tokens)
+        num_token_masked = (flat_valid.sum(dim=-1) * ratios).round().clamp(min=1)
+        mask = (ranks < num_token_masked.unsqueeze(-1)) & flat_valid
+        mask = mask.view(B, F, J)
+        return mask
 
     def get_frame_mask(self, valid_tokens, length, ratios):
         B, F, J = valid_tokens.shape
-        mask_len = (length * ratios).round().long().clamp_min(1)
-        start = (length - mask_len) * torch.rand_like(ratios)
+        mask_len = (length * ratios).round().clamp(min=1)
+        start = (length - mask_len) * torch.rand_like(mask_len)
         start = start.round().int()
-        end = (start + mask_len).int()
+        end = start + mask_len
+        end = end.int()
         mask = torch.zeros((B, F, J), device=valid_tokens.device, dtype=torch.bool)
         for b in range(B):
             mask[b, start[b] : end[b], :] = True
@@ -580,7 +613,7 @@ class MaskedPoseModel(nn.Module):
 
     def get_joint_mask(self, valid_tokens, ratios):
         B, F, J = valid_tokens.shape
-        num_token_masked = (J * ratios).round().long().clamp_min(1)
+        num_token_masked = (J * ratios).round().clamp(min=1)
         batch_randperm = torch.rand((B, J), device=valid_tokens.device).argsort(dim=-1)
         mask = batch_randperm < num_token_masked.unsqueeze(-1)
         mask = mask.unsqueeze(1).expand(B, F, J)
@@ -604,14 +637,24 @@ class MaskedPoseModel(nn.Module):
 
     def corrupt(self, token_ids, mask):
         x_ids = token_ids.clone()
+
+        # Further Apply Bert Masking Scheme
+        # Step 1: 10% replace with an incorrect token
         mask_rid = get_mask_subset_prob(mask, self.random_replace_prob)
         rand_id = torch.randint_like(x_ids, high=self.codebook_size)
         x_ids = torch.where(mask_rid, rand_id, x_ids)
+        # Step 2: Keep correct tokens or replace with mask token among the remaining selected tokens
         mask_mid = get_mask_subset_prob(mask & ~mask_rid, self.mask_replace_prob)
-        return torch.where(mask_mid, self.mask_id, x_ids)
+
+        x_ids = torch.where(mask_mid, self.mask_id, x_ids)
+        return x_ids
 
     @torch.no_grad()
     def get_inference_mask(self, token_ids, gamma_gv, root_velocity, visual_context, length, codebook):
+        """
+        Generate one step inference tokens for training
+        Start from all tokens being masked and recover for one step
+        """
         B, F, J = token_ids.shape
         valid_tokens = length_to_mask(length, F)[:, :, None].expand(B, F, J)
         masked_ids = torch.full_like(token_ids, fill_value=self.mask_id)
@@ -623,13 +666,14 @@ class MaskedPoseModel(nn.Module):
 
         with torch.autocast("cuda", enabled=torch.is_autocast_enabled(), cache_enabled=False):
             logits = self(masked_ids, gamma_gv, root_velocity, visual_context, length, codebook)
-        logits = einops.rearrange(logits, "b f j c -> b (f j) c")
-        pred_ids = logits.argmax(dim=-1)
-        probs = logits.softmax(dim=-1)
-        scores = probs.gather(2, pred_ids.unsqueeze(dim=-1)).squeeze(-1)
+        logits = einops.rearrange(logits, "b f j c -> b (f j) c")  # (B, N, C)
+        # use argmax to pick the most probable token
+        pred_ids = logits.argmax(dim=-1)  # (B, N)
+        probs = logits.softmax(dim=-1)  # (B, N, C)
+        scores = probs.gather(2, pred_ids.unsqueeze(dim=-1)).squeeze(-1)  # (B, N)
         scores = scores.masked_fill(~valid_tokens.flatten(1), 1e5)
-        sorted_indices = scores.argsort(dim=1)
-        ranks = sorted_indices.argsort(dim=1)
+        sorted_indices = scores.argsort(dim=1) # (b, k), sorted_indices[i, j] = the index of j-th lowest element in scores on dim=1
+        ranks = sorted_indices.argsort(dim=1)  # (b, k), rank[i, j] = the rank (0: lowest) of scores[i, j] on dim=1
         mask = (ranks < num_token_masked.unsqueeze(-1)) & valid_tokens.flatten(1)
 
         x_ids = torch.where(mask, self.mask_id, pred_ids)
@@ -642,48 +686,99 @@ class MaskedPoseModel(nn.Module):
         prob = np.array(self.mask_mode_weights) / np.sum(self.mask_mode_weights)
         mode = np.random.choice(possible_modes, p=prob)
         if mode == "inference":
-            input_ids, mask = self.get_inference_mask(
+            x_ids, mask = self.get_inference_mask(
                 token_ids, gamma_gv, root_velocity, visual_context, length, codebook
             )
         else:
             mask = self.get_mask(token_ids, length, mode)
             if mode == "full":
-                input_ids = torch.where(mask, self.mask_id, token_ids)
+                x_ids = torch.where(mask, self.mask_id, token_ids)
             else:
-                input_ids = self.corrupt(token_ids, mask)
-        logits = self(input_ids, gamma_gv, root_velocity, visual_context, length, codebook)
+                x_ids = self.corrupt(token_ids, mask)
+        logits = self(x_ids, gamma_gv, root_velocity, visual_context, length, codebook)
         return logits, mask
 
     def get_training_temperature(self, progress):
         ratio = min(progress / self.temp_end_ratio, 1.0)
-        return self.temp_end + 0.5 * (self.temp_start - self.temp_end) * (1 + math.cos(ratio * math.pi))
+        temp = self.temp_end + 0.5 * (self.temp_start - self.temp_end) * (
+            1 + np.cos(ratio * np.pi)
+        )
+        return temp
 
     @torch.no_grad()
     def generate(self, gamma_gv, root_velocity, visual_context, length, codebook):
+        """
+        Generate pose sequence for test stage
+        Start from all tokens being masked and iteratively recover tokens
+        """
+
         B, F = visual_context.shape[:2]
-        valid_tokens = length_to_mask(length, F)[:, :, None].expand(B, F, self.num_tokens)
-        ids = torch.zeros(valid_tokens.shape, dtype=torch.long, device=visual_context.device)
+        J = self.num_tokens
+        N = F * J
+        device = visual_context.device
+        valid_tokens = length_to_mask(length, F)[:, :, None].expand(B, F, J)
+        valid_tokens = valid_tokens.reshape(B, N)
+        ids = torch.zeros((B, N), dtype=torch.long, device=device)
         ids[valid_tokens] = self.mask_id
-        num_masked_init = valid_tokens.flatten(1).sum(dim=-1)
+        mask = ids == self.mask_id
+        num_masked_init = mask.sum(dim=-1)
+        scores = torch.zeros_like(ids, device=ids.device)
+        scores = scores.masked_fill(~mask, 1e5)
 
-        for timestep in range(self.generation_steps):
-            is_mask = ids == self.mask_id
-            logits = self(ids, gamma_gv, root_velocity, visual_context, length, codebook)
-            probs = nn.functional.softmax(logits / self.generation_temperature, dim=-1)
-            pred_ids = probs.argmax(dim=-1)
-            ids = torch.where(is_mask, pred_ids, ids)
+        timesteps = self.generation_steps
 
-            probs_without_temperature = logits.softmax(dim=-1)
-            scores = probs_without_temperature.gather(-1, pred_ids.unsqueeze(dim=-1)).squeeze(-1)
-            scores = scores.masked_fill(~is_mask, 1e5)
+        # Start from tokens
+        starting_temperature = self.generation_temperature
 
-            if timestep + 1 == self.generation_steps:
-                break
-            rand_mask_prob = (torch.cos(torch.tensor((timestep + 1) / self.generation_steps * math.pi)) + 1) * 0.5
-            num_token_masked = torch.round(rand_mask_prob.to(ids.device) * num_masked_init).clamp(min=1)
-            sorted_indices = scores.flatten(1).argsort(dim=1)
-            ranks = sorted_indices.argsort(dim=1)
-            is_mask = (ranks < num_token_masked.unsqueeze(-1)).reshape_as(ids) & valid_tokens
+        for timestep, timestep_int in zip(
+            torch.linspace(0, 1, timesteps + 1, device=device)[:timesteps], range(timesteps)
+        ):
+            # 0 <= timestep < 1
+            rand_mask_prob = (torch.cos(timestep * math.pi) + 1) * 0.5
+
+            # Maskout, and cope with variable length
+            # fix: the ratio regarding lengths, instead of seq_len
+            num_token_masked = torch.round(
+                rand_mask_prob * num_masked_init 
+            ).clamp(
+                min=1
+            )  # (b, )
+
+            # select num_token_masked tokens with lowest scores to be masked
+            sorted_indices = scores.argsort(
+                dim=1
+            )  # (b, k), sorted_indices[i, j] = the index of j-th lowest element in scores on dim=1
+            ranks = sorted_indices.argsort(
+                dim=1
+            )  # (b, k), rank[i, j] = the rank (0: lowest) of scores[i, j] on dim=1
+            is_mask = (ranks < num_token_masked.unsqueeze(-1)) & valid_tokens
             ids = torch.where(is_mask, self.mask_id, ids)
 
+            # Preparing input
+            logits = self(
+                ids.view(B, F, J), gamma_gv, root_velocity, visual_context, length, codebook
+            )
+            logits = einops.rearrange(logits, "b f j c -> b (f j) c")  # (B, N, C)
+            # clean low prob token
+            # use greedy sampling
+            filtered_logits = top_k(logits, k=1, dim=-1)
+
+            # Update ids
+            temperature = starting_temperature
+            probs = nn.functional.softmax(filtered_logits / temperature, dim=-1)  # (B, N, C)
+            pred_ids = Categorical(probs).sample()  # (B, N)
+
+            ids = torch.where(is_mask, pred_ids, ids)
+
+            # Updating scores
+            probs_without_temperature = logits.softmax(dim=-1)  # (B, N, C)
+            scores = probs_without_temperature.gather(
+                2, pred_ids.unsqueeze(dim=-1)
+            )  # (B, N, 1)
+            scores = scores.squeeze(-1)  # (B, N)
+
+            # We do not want to re-mask the previously kept tokens, or pad tokens
+            scores = scores.masked_fill(~is_mask, 1e5)
+
+        ids = ids.view(B, F, J)
         return ids

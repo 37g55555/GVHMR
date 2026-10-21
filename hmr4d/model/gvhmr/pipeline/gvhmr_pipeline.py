@@ -128,9 +128,9 @@ class Pipeline(nn.Module):
                 length,
                 self.pose_tokenizer.codebook,
             )
-            temperature = self.masked_pose.get_training_temperature(train_progress)
-            token_probabilities = F.gumbel_softmax(pose_logits, tau=temperature, hard=True, dim=-1)
-            tokens = torch.matmul(token_probabilities, self.pose_tokenizer.codebook)
+            temp = self.masked_pose.get_training_temperature(train_progress)
+            probs = nn.functional.gumbel_softmax(pose_logits, tau=temp, hard=True, dim=-1)
+            tokens = torch.einsum("b f j n, n c -> b f j c", probs, self.pose_tokenizer.codebook)
             body_pose = self.decode_pose(tokens, length)
         else:
             token_ids = self.masked_pose.generate(
@@ -182,7 +182,10 @@ class Pipeline(nn.Module):
         # ========== Compute Loss ========== #
         total_loss = 0
         # 1. Masked-token classification loss
-        token_loss = F.cross_entropy(pose_logits[pose_mask], token_ids[pose_mask])
+        labels = torch.where(pose_mask, token_ids, self.masked_pose.mask_id)
+        token_loss = F.cross_entropy(
+            rearrange(pose_logits, "b f j c -> b c f j"), labels, ignore_index=self.masked_pose.mask_id
+        )
         total_loss += token_loss * self.weights.token_ce
         outputs["token_loss"] = token_loss
 
@@ -312,7 +315,9 @@ def compute_extra_temporal_loss(inputs, outputs, ppl):
     ) * fps[..., None]
     stationary_joint_vel = torch.norm(stationary_joint_vel, dim=-1)
     thresh = ppl.args.skating_vel_thres
-    stationary_joint_violation = torch.clamp(stationary_joint_vel - thresh, min=0.0)
+    stationary_joint_violation = torch.clamp(
+        stationary_joint_vel - thresh, min=0.0
+    )
     weight_sum = contact_lbl_gt.sum() + 1e-6
     loss_skating = (stationary_joint_violation * contact_lbl_gt).sum() / weight_sum
 
