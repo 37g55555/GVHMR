@@ -276,9 +276,10 @@ class PoseTokenizer(nn.Module):
         self.requires_grad_(False)
 
     @torch.no_grad()
+    @torch.autocast(device_type="cuda", enabled=False)
     def encode(self, body_pose):
         batch_size, num_frames = body_pose.shape[:2]
-        rotations = axis_angle_to_matrix(body_pose.reshape(-1, 21, 3))
+        rotations = axis_angle_to_matrix(body_pose.float().reshape(-1, 21, 3))
         rotations = matrix_to_rotation_6d(rotations)
         x_encoder = self.encoder(rotations)
         x_encoder = x_encoder.permute(0, 2, 1).contiguous()
@@ -296,13 +297,3 @@ class PoseTokenizer(nn.Module):
         rotations = pose_out["pred_pose_body_rotmat"]
         rotations = matrix_to_axis_angle(rotations)
         return rotations.reshape(batch_size, num_frames, 63)
-
-    def decode_probabilities(self, probabilities):
-        batch_size, num_frames = probabilities.shape[:2]
-        decode_feat = torch.matmul(probabilities, self.codebook)
-        return self.decode_features(decode_feat, batch_size, num_frames)
-
-    def decode_ids(self, token_ids):
-        batch_size, num_frames = token_ids.shape[:2]
-        decode_feat = F.embedding(token_ids, self.codebook)
-        return self.decode_features(decode_feat, batch_size, num_frames)

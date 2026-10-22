@@ -298,33 +298,19 @@ class GvhmrPL(pl.LightningModule):
                     # Log.info(f"Remove key `{ig_keys}' from checkpoint.")
                     checkpoint["state_dict"].pop(k)
 
-    def load_pretrained_model(self, ckpt_path):
+    def load_pretrained_model(self, ckpt_path, initialize=False):
         """Load pretrained checkpoint, and assign each weight to the corresponding part."""
         Log.info(f"[PL-Trainer] Loading ckpt: {ckpt_path}")
 
         state_dict = torch.load(ckpt_path, "cpu")["state_dict"]
-        if state_dict["pipeline.denoiser3d.final_layer.fc2.weight"].shape[0] == 151:
+        if initialize and state_dict["pipeline.denoiser3d.final_layer.fc2.weight"].shape[0] == 151:
             state_dict = select_state_dict_by_prefix(state_dict, "pipeline.denoiser3d.")
             state_dict["final_layer.fc2.weight"] = state_dict["final_layer.fc2.weight"][126:]
             state_dict["final_layer.fc2.bias"] = state_dict["final_layer.fc2.bias"][126:]
             self.pipeline.denoiser3d.load_state_dict(state_dict, strict=True)
             return
 
-        self.pipeline.denoiser3d.load_state_dict(
-            select_state_dict_by_prefix(state_dict, "pipeline.denoiser3d."), strict=True
-        )
-
-        missing, unexpected = self.load_state_dict(state_dict, strict=False)
-        real_missing = []
-        for k in missing:
-            ignored_when_saving = any(k.startswith(ig_keys) for ig_keys in self.ignored_weights_prefix)
-            if not ignored_when_saving:
-                real_missing.append(k)
-
-        if len(real_missing) > 0:
-            Log.warn(f"Missing keys: {real_missing}")
-        if len(unexpected) > 0:
-            Log.warn(f"Unexpected keys: {unexpected}")
+        self.pipeline.load_state_dict(select_state_dict_by_prefix(state_dict, "pipeline."), strict=True)
 
 
 gvhmr_pl = builds(

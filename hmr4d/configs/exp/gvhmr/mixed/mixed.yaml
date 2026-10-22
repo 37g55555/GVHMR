@@ -72,6 +72,10 @@ pipeline:
             j3d_vel: 20.
             skating: 1.
 
+callbacks:
+    simple_ckpt_saver:
+        save_weights_only: false
+
 data:
     loader_opts:
         train:

@@ -153,18 +153,19 @@ class Pipeline(nn.Module):
             "global_orient": decode_dict["global_orient"],  # (B, L, 3)
             "transl": compute_transl_full_cam(model_output["pred_cam"], inputs["bbx_xys"], inputs["K_fullimg"]),
         }
+        pred_smpl_params_global = get_smpl_params_w_Rt_v2(  # This function has for-loop
+            global_orient_gv=decode_dict["global_orient_gv"],
+            local_transl_vel=decode_dict["local_transl_vel"],
+            global_orient_c=decode_dict["global_orient"],
+            cam_angvel=inputs["cam_angvel"],
+            length=length if train else None,
+        )
+        outputs["pred_smpl_params_global"] = {
+            "body_pose": decode_dict["body_pose"],
+            "betas": decode_dict["betas"],
+            **pred_smpl_params_global,
+        }
         if not train:
-            pred_smpl_params_global = get_smpl_params_w_Rt_v2(  # This function has for-loop
-                global_orient_gv=decode_dict["global_orient_gv"],
-                local_transl_vel=decode_dict["local_transl_vel"],
-                global_orient_c=decode_dict["global_orient"],
-                cam_angvel=inputs["cam_angvel"],
-            )
-            outputs["pred_smpl_params_global"] = {
-                "body_pose": decode_dict["body_pose"],
-                "betas": decode_dict["betas"],
-                **pred_smpl_params_global,
-            }
             outputs["static_conf_logits"] = model_output["static_conf_logits"]
 
             if postproc:  # apply post-processing
@@ -270,7 +271,8 @@ def compute_extra_incam_loss(inputs, outputs, ppl):
 
     if weights.cr_verts > 0:
         # SMPL forward
-        pred_c_verts437, pred_c_j17 = endecoder.smplx_model(**outputs["pred_smpl_params_incam"])
+        pred_smpl_params = {**inputs["smpl_params_c"], "body_pose": outputs["decode_dict"]["body_pose"]}
+        pred_c_verts437, pred_c_j17 = endecoder.smplx_model(**pred_smpl_params)
         root_ = pred_c_j17[:, :, [11, 12], :].mean(-2, keepdim=True)
         pred_cr_verts437 = pred_c_verts437 - root_
 
@@ -290,13 +292,16 @@ def compute_extra_temporal_loss(inputs, outputs, ppl):
     valid_mask = mask[:, 1:] & mask[:, :-1]
     valid_mask = valid_mask & ~inputs["mask"]["spv_incam_only"][:, None]
 
-    pred_c_j3d = endecoder.fk_v2(**outputs["pred_smpl_params_incam"])
-    gt_c_j3d = endecoder.fk_v2(**inputs["smpl_params_c"])
+    pred_w_j3d = endecoder.fk_v2(**outputs["pred_smpl_params_global"])
     gt_w_j3d = endecoder.fk_v2(**inputs["smpl_params_w"])
-    R_w = axis_angle_to_matrix(inputs["smpl_params_w"]["global_orient"])
-    R_c = axis_angle_to_matrix(inputs["smpl_params_c"]["global_orient"])
-    R_c2w = R_w @ R_c.mT
-    pred_w_j3d = (pred_c_j3d - gt_c_j3d[:, :, :1]) @ R_c2w.mT + gt_w_j3d[:, :, :1]
+    R_w = axis_angle_to_matrix(inputs["smpl_params_w"]["global_orient"][:, :1])
+    R_c = axis_angle_to_matrix(inputs["smpl_params_c"]["global_orient"][:, :1])
+    global_orient_gv_gt = matrix_to_axis_angle(inputs["R_c2gv"][:, :1] @ R_c)
+    global_orient_gv_gt, _, _ = get_tgtcoord_rootparam(
+        global_orient_gv_gt, torch.zeros_like(global_orient_gv_gt), tsf="any->ay"
+    )
+    R_gv0_to_w = R_w @ axis_angle_to_matrix(global_orient_gv_gt).mT
+    pred_w_j3d = (pred_w_j3d - pred_w_j3d[:, :1, :1]) @ R_gv0_to_w.mT + gt_w_j3d[:, :1, :1]
 
     gt_vel = gt_w_j3d[:, 1:] - gt_w_j3d[:, :-1]
     pred_diff_vel = pred_w_j3d[:, 1:] - pred_w_j3d[:, :-1]
@@ -332,6 +337,7 @@ def get_smpl_params_w_Rt_v2(
     local_transl_vel,
     global_orient_c,
     cam_angvel,
+    length=None,
 ):
     """Get global R,t in GV0(ay)
     Args:
@@ -370,6 +376,11 @@ def get_smpl_params_w_Rt_v2(
     aa_tp1_to_t = vec2_xyz.cross(vec1_xyz, dim=-1)
     aa_tp1_to_t_angle = torch.acos(torch.clamp((vec1_xyz * vec2_xyz).sum(dim=-1, keepdim=True), -1.0, 1.0))
     aa_tp1_to_t = F.normalize(aa_tp1_to_t, dim=-1) * aa_tp1_to_t_angle
+
+    if length is not None:
+        indices = torch.arange(aa_tp1_to_t.shape[1], device=aa_tp1_to_t.device).expand(B, -1)
+        indices = torch.minimum(indices, length[:, None] - 1)
+        aa_tp1_to_t = aa_tp1_to_t.gather(1, indices[..., None].expand(-1, -1, 3))
 
     aa_tp1_to_t = gaussian_smooth(aa_tp1_to_t, dim=-2)  # Smooth
     R_tp1_to_t = axis_angle_to_matrix(aa_tp1_to_t).mT  # (B, L, 3)

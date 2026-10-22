@@ -51,15 +51,7 @@ class DemoPL(pl.LightningModule):
         Log.info(f"[PL-Trainer] Loading ckpt type: {ckpt_path}")
 
         state_dict = torch.load(ckpt_path, "cpu")["state_dict"]
-        self.pipeline.denoiser3d.load_state_dict(
-            select_state_dict_by_prefix(state_dict, "pipeline.denoiser3d."), strict=True
-        )
-
-        missing, unexpected = self.load_state_dict(state_dict, strict=False)
-        if len(missing) > 0:
-            Log.warn(f"Missing keys: {missing}")
-        if len(unexpected) > 0:
-            Log.warn(f"Unexpected keys: {unexpected}")
+        self.pipeline.load_state_dict(select_state_dict_by_prefix(state_dict, "pipeline."), strict=True)
 
 
 MainStore.store(name="gvhmr_pl_demo", node=builds(DemoPL, pipeline="${pipeline}"), group="model/gvhmr")

@@ -8,14 +8,14 @@ from einops import repeat, rearrange
 from scipy.ndimage._filters import _gaussian_kernel1d
 
 
-def load_pretrained_model(model, ckpt_path):
+def load_pretrained_model(model, ckpt_path, **kwargs):
     """
     Load ckpt to model with strategy
     """
     assert Path(ckpt_path).exists()
     # use model's own load_pretrained_model method
     if hasattr(model, "load_pretrained_model"):
-        model.load_pretrained_model(ckpt_path)
+        model.load_pretrained_model(ckpt_path, **kwargs)
     else:
         Log.info(f"Loading ckpt: {ckpt_path}")
         ckpt = torch.load(ckpt_path, "cpu")

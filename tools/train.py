@@ -39,8 +39,12 @@ def train(cfg: DictConfig) -> None:
     # preparation
     datamodule: pl.LightningDataModule = hydra.utils.instantiate(cfg.data, _recursive_=False)
     model: pl.LightningModule = hydra.utils.instantiate(cfg.model, _recursive_=False)
-    if cfg.ckpt_path is not None:
-        load_pretrained_model(model, cfg.ckpt_path)
+    resume_path = None
+    if cfg.task == "fit" and cfg.resume_mode is not None:
+        resume_path = get_resume_ckpt_path(cfg.resume_mode, ckpt_dir=cfg.callbacks.simple_ckpt_saver.output_dir)
+        assert resume_path is not None
+    elif cfg.ckpt_path is not None:
+        load_pretrained_model(model, cfg.ckpt_path, initialize=cfg.task == "fit")
 
     # PL callbacks and logger
     callbacks = get_callbacks(cfg)
@@ -62,9 +66,7 @@ def train(cfg: DictConfig) -> None:
     )
 
     if cfg.task == "fit":
-        resume_path = None
-        if cfg.resume_mode is not None:
-            resume_path = get_resume_ckpt_path(cfg.resume_mode, ckpt_dir=cfg.callbacks.model_checkpoint.dirpath)
+        if resume_path is not None:
             Log.info(f"Resume training from {resume_path}")
         Log.info("Start Fitiing...")
         trainer.fit(model, datamodule.train_dataloader(), datamodule.val_dataloader(), ckpt_path=resume_path)

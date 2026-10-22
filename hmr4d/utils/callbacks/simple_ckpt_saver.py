@@ -1,5 +1,4 @@
 from pathlib import Path
-import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks.checkpoint import Checkpoint
 from pytorch_lightning.utilities import rank_zero_only
@@ -36,7 +35,6 @@ class SimpleCkptSaver(Checkpoint):
             self.output_dir.mkdir(parents=True, exist_ok=True)
             Log.info(f"[Simple Ckpt Saver]: Save to `{self.output_dir}'")
 
-    @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
         """Save a checkpoint at the end of the training epoch."""
         if self.every_n_epochs >= 1 and (trainer.current_epoch + 1) % self.every_n_epochs == 0:
@@ -48,38 +46,15 @@ class SimpleCkptSaver(Checkpoint):
             for p in sorted(list(self.output_dir.glob("*.ckpt"))):
                 model_paths.append(p)
             model_to_remove = model_paths[0] if len(model_paths) >= self.save_top_k else None
+            model_to_remove = trainer.strategy.broadcast(model_to_remove)
 
             # Save cureent checkpoint
             filepath = self.output_dir / self.filename.format(epoch=trainer.current_epoch, step=trainer.global_step)
-            checkpoint = {
-                "epoch": trainer.current_epoch,
-                "global_step": trainer.global_step,
-                "pytorch-lightning_version": pl.__version__,
-                "state_dict": pl_module.state_dict(),
-            }
-            pl_module.on_save_checkpoint(checkpoint)
-
-            if not self.save_weights_only:
-                # optimizer
-                optimizer_states = []
-                for i, optimizer in enumerate(trainer.optimizers):
-                    # Rely on accelerator to dump optimizer state
-                    optimizer_state = trainer.strategy.optimizer_state(optimizer)
-                    optimizer_states.append(optimizer_state)
-                checkpoint["optimizer_states"] = optimizer_states
-
-                # lr_scheduler
-                lr_schedulers = []
-                for config in trainer.lr_scheduler_configs:
-                    lr_schedulers.append(config.scheduler.state_dict())
-                checkpoint["lr_schedulers"] = lr_schedulers
-
-            # trainer.strategy.checkpoint_io.save_checkpoint(checkpoint, filepath)
-            torch.save(checkpoint, filepath)
+            trainer.save_checkpoint(filepath, weights_only=self.save_weights_only)
 
             # Remove the earliest checkpoint
             if model_to_remove:
-                trainer.strategy.remove_checkpoint(model_paths[0])
+                trainer.strategy.remove_checkpoint(model_to_remove)
 
 
 group_name = "callbacks/simple_ckpt_saver"
